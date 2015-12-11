@@ -134,7 +134,14 @@ public class CacheService implements CacheServiceMBean
         long rowCacheInMemoryCapacity = DatabaseDescriptor.getRowCacheSizeInMB() * 1024 * 1024;
 
         // cache object
-        ICache<RowCacheKey, IRowCacheEntry> rc = new SerializingCacheProvider().create(rowCacheInMemoryCapacity);
+//        ICache<RowCacheKey, IRowCacheEntry> rc = new SerializingCacheProvider().create(rowCacheInMemoryCapacity);
+        ICache<RowCacheKey, IRowCacheEntry> rc;
+        String cacheType = System.getProperty("rowcache.type");
+        if ("capi".equals(cacheType))
+            rc = new CapiBlockRowCache(rowCacheInMemoryCapacity);
+        else
+            rc = new SerializingCacheProvider().create(rowCacheInMemoryCapacity);
+        logger.info("row cache type: " + (cacheType == null ? "default" : cacheType) + ":" + rc.getClass().getName());
         AutoSavingCache<RowCacheKey, IRowCacheEntry> rowCache = new AutoSavingCache<>(rc, CacheType.ROW_CACHE, new RowCacheSerializer());
 
         int rowCacheKeysToSave = DatabaseDescriptor.getRowCacheKeysToSave();
