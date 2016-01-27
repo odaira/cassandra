@@ -82,7 +82,7 @@ public class CapiChunkDriver extends PersistenceDriverImpl implements Persistenc
                     throw new IllegalStateException();
 
                 long start = System.currentTimeMillis();
-                while ((rc = future.get(10L, TimeUnit.SECONDS)) == 0L)
+                while ((rc = future.get(20L, TimeUnit.SECONDS)) == 0L)
                     ;
                 long elapsed = System.currentTimeMillis() - start;
 
