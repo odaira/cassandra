@@ -380,11 +380,13 @@ public class CapiCache<K, V> {
                 for (PersistenceDriver driver : drivers)
                     driver.process();
             synchronized (ret) {
-                try {
-                    ret.wait();
-                } catch (InterruptedException ex) {
-                    throw new IllegalStateException(ex);
-                }
+            	if (ret.get() == null) {
+            		try {
+            			ret.wait();
+            		} catch (InterruptedException ex) {
+            			throw new IllegalStateException(ex);
+            		}
+            	}
             }
         }
 
