@@ -17,7 +17,9 @@
  */
 package org.apache.cassandra.io.compress;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.zip.Adler32;
@@ -29,7 +31,6 @@ import org.apache.cassandra.io.sstable.CorruptSSTableException;
 import org.apache.cassandra.io.util.CompressedPoolingSegmentedFile;
 import org.apache.cassandra.io.util.PoolingSegmentedFile;
 import org.apache.cassandra.io.util.RandomAccessReader;
-import org.apache.cassandra.utils.FBUtilities;
 
 /**
  * CRAR extends RAR to transparently uncompress blocks from the file into RAR.buffer.  Most of the RAR
@@ -37,6 +38,8 @@ import org.apache.cassandra.utils.FBUtilities;
  */
 public class CompressedRandomAccessReader extends RandomAccessReader
 {
+    static final boolean USE_ODIRECT = "true".equals(System.getProperty("odirect"));
+    
     public static CompressedRandomAccessReader open(String dataFilePath, CompressionMetadata metadata)
     {
         return open(dataFilePath, metadata, null);
@@ -45,7 +48,10 @@ public class CompressedRandomAccessReader extends RandomAccessReader
     {
         try
         {
-            return new CompressedRandomAccessReader(path, metadata, owner);
+            if (USE_ODIRECT)
+                return new DirectCompressedRandomAccessReader(path, metadata, owner);
+            else
+                return new CompressedRandomAccessReader(path, metadata, owner);
         }
         catch (FileNotFoundException e)
         {

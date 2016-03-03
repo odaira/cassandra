@@ -66,7 +66,8 @@ public class RandomAccessReader extends RandomAccessFile implements FileDataInpu
 
         this.owner = owner;
 
-        channel = super.getChannel();
+        //channel = super.getChannel();
+        channel = getChannel0();
         filePath = file.getAbsolutePath();
 
         // allocating required size of the buffer
@@ -91,6 +92,11 @@ public class RandomAccessReader extends RandomAccessFile implements FileDataInpu
 
         this.fileLength = fileLength;
         validBufferBytes = -1; // that will trigger reBuffer() on demand by read/seek operations
+    }
+
+    protected FileChannel getChannel0() throws FileNotFoundException
+    {
+        return super.getChannel();
     }
 
     public static RandomAccessReader open(File file, long overrideSize, PoolingSegmentedFile owner)
