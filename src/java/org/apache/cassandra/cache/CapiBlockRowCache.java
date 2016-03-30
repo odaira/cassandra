@@ -530,7 +530,7 @@ public class CapiBlockRowCache //
         throw new UnsupportedOperationException();
     }
 
-    long logUnit = 10000000L;
+    long logUnit = 1000000L;
     long lastLog = System.currentTimeMillis();
     long lastCapiRead = 0L;
     long lastCapiRowRead = 0L;
@@ -551,9 +551,9 @@ public class CapiBlockRowCache //
 
         logger.info("cache hit/miss : " + cacheHit + "/" + cacheMiss
                 + ", "//
-                + "total swapped-in success/miss/error/remove : " + swapin + "/" + swapinMiss + "/" + swapinErr + "/"
-                + remove + ", throughput : " + (count / (double) elapsed * 1000.0) + ":"
-                + (rowCount / (double) elapsed * 1000.0));
+                + "total swapped-in (success/miss/error/remove) : " + swapin + "/" + swapinMiss + "/" + swapinErr + "/"
+                + remove + ", throughput (cache/capi): " + (count / (double) elapsed) * 1000.0 + "/"
+                + (rowCount / (double) elapsed) * 1000.0);
     }
 
 }
