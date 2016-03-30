@@ -31,7 +31,7 @@ public class CapiChunkDriver extends PersistenceDriverImpl implements Persistenc
 
     public static final boolean pooled = System.getProperty("capi.driver.task.nopool") == null;
     public static final int numOfSubThreads = Integer.parseInt(System.getProperty("capi.driver.thread.sub", "32"));
-    public static final int numOfCoreThreads = Integer.parseInt(System.getProperty("capi.driver.thread.core", "10"));
+    public static final int numOfCoreThreads = Integer.parseInt(System.getProperty("capi.driver.thread.core", "1"));
 
     private class Task {
         boolean write;
