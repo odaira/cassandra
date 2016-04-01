@@ -11,7 +11,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.apache.cassandra.cache.capi.CapiCache;
 import org.apache.cassandra.cache.capi.CapiCache.CacheHandler;
 import org.apache.cassandra.cache.capi.CapiChunkDriver;
-import org.apache.cassandra.cache.capi.PersistenceDriver;
 import org.apache.cassandra.db.ColumnFamily;
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.ISerializer;
@@ -28,6 +27,7 @@ import org.slf4j.LoggerFactory;
 import com.googlecode.concurrentlinkedhashmap.ConcurrentLinkedHashMap;
 import com.googlecode.concurrentlinkedhashmap.EvictionListener;
 import com.googlecode.concurrentlinkedhashmap.Weigher;
+import com.ibm.research.capiblock.CapiBlockDevice;
 
 public class CapiBlockRowCache //
         implements ICache<RowCacheKey, IRowCacheEntry>, EvictionListener<RowCacheKey, IRowCacheEntry>
@@ -142,8 +142,8 @@ public class CapiBlockRowCache //
         long cellSize = 1024L * 1024L * 1024L * Integer.parseInt(System.getProperty("capi.cell", "10"));
         logger.info("capicache: cell=" + (cellSize / 1024.0 / 1024.0 / 1024.0) + "GB");
 
-        int cellByte = PersistenceDriver.BLOCK_SIZE;
-        logger.info("capicache: cellsize=" + (PersistenceDriver.BLOCK_SIZE / 1024) + "KB");
+        int cellByte = CapiBlockDevice.BLOCK_SIZE;
+        logger.info("capicache: cellsize=" + (CapiBlockDevice.BLOCK_SIZE / 1024) + "KB");
 
         // -Dcapi.async=256
         int numOfAsync = Integer.parseInt(System.getProperty("capi.async", "64"));
@@ -176,7 +176,7 @@ public class CapiBlockRowCache //
                 for (int i = 0; i < mirrorDevices.length; ++i)
                     mirrorDevices[i] = deviceAttrs[i + 3];
 
-                capiCache.addDevice(deviceName, offset, sizeInBytes / PersistenceDriver.BLOCK_SIZE, mirrorDevices);
+                capiCache.addDevice(deviceName, offset, sizeInBytes / CapiBlockDevice.BLOCK_SIZE, mirrorDevices);
 
                 logger.info("capicache: device=" + deviceName + ", start=" + offset + ", size="
                         + (sizeInBytes / 1024.0 / 1024.0) + "MB");

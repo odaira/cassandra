@@ -12,9 +12,11 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.apache.cassandra.cache.capi.PersistenceDriver.AsyncHandler;
+import org.apache.cassandra.cache.capi.CapiChunkDriver.AsyncHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.ibm.research.capiblock.CapiBlockDevice;
 
 public class StorageManager {
     private static final Logger logger = LoggerFactory.getLogger(StorageManager.class);
@@ -32,7 +34,7 @@ public class StorageManager {
 
     }
 
-    private List<PersistenceDriver> drivers = new ArrayList<>();
+    private List<CapiChunkDriver> drivers = new ArrayList<>();
     private List<Long> driver2StartLBA = new ArrayList<>();
     private long lbaSizeForEach = 0;
     private boolean initialized = false; // must be volatile for safty
@@ -53,7 +55,7 @@ public class StorageManager {
     public StorageManager() {
     }
 
-    void add(PersistenceDriver driver, long startLba, long lbaSize) {
+    void add(CapiChunkDriver driver, long startLba, long lbaSize) {
         assert(driver != null);
         assert(startLba >= 0);
         assert(lbaSize > 0);
@@ -85,7 +87,7 @@ public class StorageManager {
         else
             recoverFooters();
 
-        limit = (long) drivers.size() * (long) lbaSizeForEach * (long) PersistenceDriver.BLOCK_SIZE;
+        limit = (long) drivers.size() * (long) lbaSizeForEach * (long) CapiBlockDevice.BLOCK_SIZE;
 
         initialized = true;
 
@@ -99,7 +101,7 @@ public class StorageManager {
     private void initFooters() throws IOException {
         final ConcurrentLinkedQueue<String> errMsgs = new ConcurrentLinkedQueue<>();
         for (int deviceIdx = 0; deviceIdx < drivers.size(); ++deviceIdx) {
-            PersistenceDriver driver = drivers.get(deviceIdx);
+            CapiChunkDriver driver = drivers.get(deviceIdx);
 
             long initSize = ALLOCATE_LBA_SIZE;
             if (ALLOCATE_LBA_SIZE >= lbaSizeForEach)
@@ -109,7 +111,7 @@ public class StorageManager {
             persistedFreeLBAs.set(deviceIdx, new AtomicLong(initFreeLba));
             long footerLBA = getFooterLBA(deviceIdx);
 
-            final ByteBuffer footer = getByteBuffer(PersistenceDriver.BLOCK_SIZE * FOOTER_SIZE);
+            final ByteBuffer footer = getByteBuffer(CapiBlockDevice.BLOCK_SIZE * FOOTER_SIZE);
             footers.add(footer);
 
             reset(footer);
@@ -131,7 +133,7 @@ public class StorageManager {
             });
         }
 
-        for (PersistenceDriver driver : drivers)
+        for (CapiChunkDriver driver : drivers)
             driver.flush();
 
         if (!errMsgs.isEmpty())
@@ -153,7 +155,7 @@ public class StorageManager {
         final ConcurrentLinkedQueue<String> errMsgs = new ConcurrentLinkedQueue<>();
         for (int i = 0; i < drivers.size(); ++i) {
             final int deviceIdx = i;
-            final PersistenceDriver driver = drivers.get(deviceIdx);
+            final CapiChunkDriver driver = drivers.get(deviceIdx);
             final long footerLBA = getFooterLBA(deviceIdx);
 
             ByteBuffer footer = driver.read(footerLBA, FOOTER_SIZE);
@@ -222,32 +224,25 @@ public class StorageManager {
         for (int driverIdx = 0; driverIdx < drivers.size(); ++driverIdx)
             extendSize(driverIdx);
 
-        for (PersistenceDriver driver : drivers)
+        for (CapiChunkDriver driver : drivers)
             driver.flush();
     }
 
     public void flush() throws IOException {
         checkActive();
 
-        while (true) {
-            boolean remain = false;
-            for (PersistenceDriver driver : drivers)
-                remain |= driver.remaining() != 0;
-            if (!remain)
-                break;
-            for (PersistenceDriver driver : drivers)
-                driver.flush();
-        }
+        for (CapiChunkDriver driver : drivers)
+            driver.flush();
     }
 
     public synchronized void close() throws IOException {
         if (closed)
             return;
 
-        for (PersistenceDriver driver : drivers)
+        for (CapiChunkDriver driver : drivers)
             driver.flush();
 
-        for (PersistenceDriver driver : drivers)
+        for (CapiChunkDriver driver : drivers)
             driver.close();
 
         closed = true;
@@ -257,12 +252,12 @@ public class StorageManager {
         return driver2StartLBA.get(driverIdx) + lbaSizeForEach + 1L;
     }
 
-    private Set<PersistenceDriver> lockedDrivers = new HashSet<>();
+    private Set<CapiChunkDriver> lockedDrivers = new HashSet<>();
 
     private void extendSize(int driverIdx) throws IOException {
         final AtomicLong persistedFreeLBA = persistedFreeLBAs.get(driverIdx);
         AtomicLong freeLBA = freeLBAs.get(driverIdx);
-        final PersistenceDriver driver = drivers.get(driverIdx);
+        final CapiChunkDriver driver = drivers.get(driverIdx);
         ByteBuffer footer = footers.get(driverIdx);
         long footerLba = getFooterLBA(driverIdx);
 
@@ -356,7 +351,7 @@ public class StorageManager {
         return limit;
     }
 
-    public long reserve(PersistenceDriver driver, long sizeOfBytesInt) throws IOException {
+    public long reserve(CapiChunkDriver driver, long sizeOfBytesInt) throws IOException {
         if (initialized)
             throw new IllegalStateException("already initialized.");
 
@@ -366,7 +361,7 @@ public class StorageManager {
         if (driverIdx < 0)
             throw new IllegalArgumentException();
 
-        int numOfBlocks = (int) (sizeOfBytesInt / (long) PersistenceDriver.BLOCK_SIZE);
+        int numOfBlocks = (int) (sizeOfBytesInt / (long) CapiBlockDevice.BLOCK_SIZE);
 
         return allocate0(driverIdx, numOfBlocks);
     }
@@ -380,7 +375,7 @@ public class StorageManager {
 
         int sizeOfBytesInt = (int) sizeOfBytes;
 
-        int numOfBlocks = sizeOfBytesInt / PersistenceDriver.BLOCK_SIZE;
+        int numOfBlocks = sizeOfBytesInt / CapiBlockDevice.BLOCK_SIZE;
 
         Long ret = null;
         if (numOfBlocks == 1)
@@ -435,7 +430,7 @@ public class StorageManager {
 
         //System.err.println("allocated: driver=" + drivers.get(driverIdx) + ", memory=" + lba + "-" + (lba + numOfBlocks));
 
-        long address = ((long) driverIdx * lbaSizeForEach + lba) * (long) PersistenceDriver.BLOCK_SIZE;
+        long address = ((long) driverIdx * lbaSizeForEach + lba) * (long) CapiBlockDevice.BLOCK_SIZE;
         return address;
     }
 
@@ -448,7 +443,7 @@ public class StorageManager {
 
         int sizeOfBytesInt = (int) sizeOfBytes;
 
-        int numOfBlocks = sizeOfBytesInt / PersistenceDriver.BLOCK_SIZE;
+        int numOfBlocks = sizeOfBytesInt / CapiBlockDevice.BLOCK_SIZE;
         if (numOfBlocks == 1)
             freed4List.add(address);
         else if (numOfBlocks == 2)
@@ -473,7 +468,7 @@ public class StorageManager {
     }
 
     class RealAddressRange {
-        PersistenceDriver driver;
+        CapiChunkDriver driver;
         long startLBA;
         long endLBA;
 
@@ -500,7 +495,7 @@ public class StorageManager {
         }
 
         public int size() {
-            return (int) (endLBA - startLBA) * PersistenceDriver.BLOCK_SIZE;
+            return (int) (endLBA - startLBA) * CapiBlockDevice.BLOCK_SIZE;
         }
 
         ByteBuffer read() throws IOException {
@@ -524,12 +519,12 @@ public class StorageManager {
     }
 
     private void checkSizeAlignment(long sizeOfBytesInt) {
-        if (sizeOfBytesInt % (long) PersistenceDriver.BLOCK_SIZE != 0L)
+        if (sizeOfBytesInt % (long) CapiBlockDevice.BLOCK_SIZE != 0L)
             throw new IllegalArgumentException("size is not aligned.");
     }
 
     private void checkAddressAlignment(long address) {
-        if (address % (long) PersistenceDriver.BLOCK_SIZE != 0L)
+        if (address % (long) CapiBlockDevice.BLOCK_SIZE != 0L)
             throw new IllegalArgumentException("address is not aligned.");
     }
 
@@ -541,8 +536,8 @@ public class StorageManager {
     }
 
     private void checkRange(long address, long sizeOfBytesInt) {
-        int startDeviceIdx = (int) (address / ((long) lbaSizeForEach * (long) PersistenceDriver.BLOCK_SIZE));
-        int endDeviceIdx = (int) ((address + sizeOfBytesInt - 1) / ((long) lbaSizeForEach * (long) PersistenceDriver.BLOCK_SIZE));
+        int startDeviceIdx = (int) (address / ((long) lbaSizeForEach * (long) CapiBlockDevice.BLOCK_SIZE));
+        int endDeviceIdx = (int) ((address + sizeOfBytesInt - 1) / ((long) lbaSizeForEach * (long) CapiBlockDevice.BLOCK_SIZE));
 
         if (startDeviceIdx != endDeviceIdx)
             throw new IllegalArgumentException("inter-driver allocation is not supportted in the current version.");
@@ -556,15 +551,15 @@ public class StorageManager {
 
         RealAddressRange real = new RealAddressRange();
 
-        int idx = (int) (address / ((long) PersistenceDriver.BLOCK_SIZE * (long) lbaSizeForEach));
+        int idx = (int) (address / ((long) CapiBlockDevice.BLOCK_SIZE * (long) lbaSizeForEach));
         real.driver = drivers.get(idx);
         long startLBA = driver2StartLBA.get(idx);
 
-        long addressInDriver = address % ((long) PersistenceDriver.BLOCK_SIZE * (long) lbaSizeForEach);
+        long addressInDriver = address % ((long) CapiBlockDevice.BLOCK_SIZE * (long) lbaSizeForEach);
 
-        real.startLBA = (int) (addressInDriver / (long) PersistenceDriver.BLOCK_SIZE) + startLBA;
+        real.startLBA = (int) (addressInDriver / (long) CapiBlockDevice.BLOCK_SIZE) + startLBA;
 
-        real.endLBA = (int) ((addressInDriver + (long) sizeOfBytesInt) / (long) PersistenceDriver.BLOCK_SIZE) + startLBA;
+        real.endLBA = (int) ((addressInDriver + (long) sizeOfBytesInt) / (long) CapiBlockDevice.BLOCK_SIZE) + startLBA;
 
         return real;
     }

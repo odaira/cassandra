@@ -11,14 +11,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.apache.cassandra.cache.capi.PersistenceDriver.AsyncHandler;
+import org.apache.cassandra.cache.capi.CapiChunkDriver.AsyncHandler;
+import org.apache.cassandra.cache.capi.CrossThreadLockManager.AlreadyReleased;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.googlecode.concurrentlinkedhashmap.ConcurrentLinkedHashMap;
+import com.ibm.research.capiblock.CapiBlockDevice;
 
 public class CapiCache<K, V> {
     private static final Logger logger = LoggerFactory.getLogger(CapiCache.class);
+
+    public static final long DEFAULT_OPERATION_TIMEOUT = 3 * 1000L;
 
     static final byte TYPE_NULL = 0;
     static final byte TYPE_KV = 1;
@@ -63,20 +67,16 @@ public class CapiCache<K, V> {
         long startLBA;
         long lbaSize;
 
-        PersistenceDriver createPersistenceDriver(int numOfAsync) throws IOException {
-            PersistenceDriver ret;
+        CapiChunkDriver createCapiChunkDriver(int numOfAsync) throws IOException {
             if (devicePath.startsWith("/dev")) {
                 String[] devicePaths = new String[mirrors.size() + 1];
                 devicePaths[0] = devicePath;
                 for (int i = 0; i < mirrors.size(); ++i)
                     devicePaths[i + 1] = mirrors.get(i);
-                ret = new CapiChunkDriver(devicePaths, numOfAsync);
-            } else if (System.getProperties().getProperty("capicache.file.asynch", "false").equals("true"))
-                ret = new AsyncFileChannelDriver(devicePath, numOfAsync, (int) (startLBA + lbaSize));
-            else
-                ret = new FileChannelDriver(devicePath, numOfAsync, (int) (startLBA + lbaSize));
-
-            return ret;
+                return new CapiChunkDriver(devicePaths, numOfAsync);
+            } else {
+                throw new IllegalArgumentException();
+            }
         }
     }
 
@@ -109,10 +109,12 @@ public class CapiCache<K, V> {
     final int cellUnitByteSize;
     final int numOfAsync;
     final Serializer<K, V> serializer;
-    final List<PersistenceDriver> drivers = new ArrayList<>();
+    final List<CapiChunkDriver> drivers = new ArrayList<>();
     final List<DeviceConfig> deviceConfigs = new ArrayList<>();
     final CrossThreadLockManager<Long> lockMgr = new CrossThreadLockManager<>();
     final ConcurrentLinkedHashMap<Long, ByteBuffer> cellCaches;
+
+    long operationTimeout = DEFAULT_OPERATION_TIMEOUT;
 
     int numOfCellsForEach;
 
@@ -120,7 +122,7 @@ public class CapiCache<K, V> {
 
     public CapiCache(long totalCellByteSize, int cellByteSize, int numOfAsync, Serializer<K, V> serializer) {
         this.sm = new StorageManager();
-        this.cellUnitByteSize = PersistenceDriverImpl.getAlignedSize(cellByteSize);
+        this.cellUnitByteSize = CapiChunkDriver.getAlignedSize(cellByteSize);
         this.numOfAsync = numOfAsync;
         this.serializer = serializer;
 
@@ -131,6 +133,10 @@ public class CapiCache<K, V> {
             numOfCells = (int) numOfCellsLong;
 
         this.cellCaches = new ConcurrentLinkedHashMap.Builder<Long, ByteBuffer>().maximumWeightedCapacity(Integer.parseInt(System.getProperty(this.getClass().getName() + ".cellcache", "1000"))).build();
+    }
+
+    public void setOperationTimeout(long timeout) {
+        this.operationTimeout = timeout;
     }
 
     public void addDevice(String deviceName, long startLBA, long sizeOfLBA, String... mirrorDevices) throws IOException {
@@ -165,7 +171,7 @@ public class CapiCache<K, V> {
             numOfAsyncForEach = 1;
 
         for (DeviceConfig config : deviceConfigs) {
-            PersistenceDriver driver = config.createPersistenceDriver(numOfAsyncForEach);
+            CapiChunkDriver driver = config.createCapiChunkDriver(numOfAsyncForEach);
             drivers.add(driver);
             sm.add(driver, config.startLBA, config.lbaSize);
         }
@@ -174,8 +180,8 @@ public class CapiCache<K, V> {
         if (numOfCells % drivers.size() != 0)
             this.numOfCellsForEach += 1;
 
-        for (PersistenceDriver driver : drivers)
-            sm.reserve(driver, (long) this.numOfCellsForEach * (long) PersistenceDriver.BLOCK_SIZE);
+        for (CapiChunkDriver driver : drivers)
+            sm.reserve(driver, (long) this.numOfCellsForEach * (long) CapiBlockDevice.BLOCK_SIZE);
 
         sm.initialize(clean);
 
@@ -210,8 +216,8 @@ public class CapiCache<K, V> {
 
             ByteBuffer pooledBB = initBBs.poll();
             if (pooledBB == null) {
-                pooledBB = sm.getByteBuffer(PersistenceDriver.BLOCK_SIZE);
-                for (int i = 0; i < PersistenceDriver.BLOCK_SIZE; ++i)
+                pooledBB = sm.getByteBuffer(CapiBlockDevice.BLOCK_SIZE);
+                for (int i = 0; i < CapiBlockDevice.BLOCK_SIZE; ++i)
                     pooledBB.put((byte) 0);
             }
             reset(pooledBB);
@@ -253,7 +259,7 @@ public class CapiCache<K, V> {
         //    allocator.releaseByteBuffer(initBB);
 
         for (int i = 1; i < numOfCells; i *= 2) {
-            ByteBuffer cell = sm.read(getCellAddrByIndex(i), PersistenceDriver.BLOCK_SIZE);
+            ByteBuffer cell = sm.read(getCellAddrByIndex(i), CapiBlockDevice.BLOCK_SIZE);
             cell.rewind();
             if (cell.get() != (byte) 0)
                 throw new IllegalStateException();
@@ -269,17 +275,8 @@ public class CapiCache<K, V> {
     }
 
     public void flush() {
-        boolean again;
-        do {
-            again = false;
-            for (PersistenceDriver driver : drivers) {
-                try {
-                    again |= driver.flush();
-                } catch (IOException e) {
-                    logger.error("flush error: driver=" + driver + ", msg=" + e.getMessage(), e);
-                }
-            }
-        } while (again);
+        for (CapiChunkDriver driver : drivers)
+            driver.flush();
     }
 
     private long getCellAddress(int hashCode) {
@@ -292,40 +289,27 @@ public class CapiCache<K, V> {
 
         long lbaForEach = sm.getLimitForEachDriver();
 
-        return (lbaForEach * (long) driverIdx + cellOffset) * (long) PersistenceDriver.BLOCK_SIZE;
+        return (lbaForEach * (long) driverIdx + cellOffset) * (long) CapiBlockDevice.BLOCK_SIZE;
     }
 
-    private void readLock(int hashCode) {
-        while (!lockMgr.readLock((Long) getCellAddress(hashCode))) {
-            for (PersistenceDriver driver : drivers) {
-                driver.process();
-            }
-        }
+    private void readLock(Object owner, int hashCode) {
+        lockMgr.readLock(owner, (Long) getCellAddress(hashCode), true);
     }
 
-    private boolean writeLockSoft(K k, int hashCode) {
-        return lockMgr.writeLock(getCellAddress(hashCode));
+    private boolean writeLockSoft(Object owner, K k, int hashCode) {
+        return lockMgr.writeLock(owner, getCellAddress(hashCode));
     }
 
-    private void writeLock(K k, int hashCode) {
-        boolean conflicted = false;
-        while (!lockMgr.writeLock(getCellAddress(hashCode))) {
-            if (!conflicted) {
-                //logger.info("lock conflict: " + (Long) getCellAddress(hashCode) + ":" + k + "<>" + lastLock.get(getCellAddress(hashCode)));
-                conflicted = true;
-            }
-            for (PersistenceDriver driver : drivers) {
-                driver.process();
-            }
-        }
+    private void writeLock(Object owner, K k, int hashCode) {
+        lockMgr.writeLock(owner, (Long) getCellAddress(hashCode), true);
     }
 
-    private void releaseReadLock(K k, int hashCode) {
-        lockMgr.releaseRead((Long) getCellAddress(hashCode));
+    private void releaseReadLock(Object owner, K k, int hashCode) throws AlreadyReleased {
+        lockMgr.release(owner, (Long) getCellAddress(hashCode));
     }
 
-    private void releaseWriteLock(K k, int hashCode) {
-        lockMgr.releaseWrite((Long) getCellAddress(hashCode));
+    private void releaseWriteLock(Object owner, K k, int hashCode) throws AlreadyReleased {
+        lockMgr.release(owner, (Long) getCellAddress(hashCode));
     }
 
     private final Object nullObject = new Object();
@@ -334,7 +318,9 @@ public class CapiCache<K, V> {
     public V getSync(K k) throws IOException {
         final AtomicReference<Object> ret = new AtomicReference<>();
 
-        get(k, new CacheHandler<K, V>() {
+        Object owner = new Object();
+
+        getWithLock(owner, k, new CacheHandler<K, V>() {
 
             @Override
             public void updated(K k) {
@@ -372,21 +358,29 @@ public class CapiCache<K, V> {
             }
         });
 
-        boolean first = true;
+        long until = System.currentTimeMillis() + operationTimeout;
         while (ret.get() == null) {
-            if (first)
-                first = false;
-            else
-                for (PersistenceDriver driver : drivers)
-                    driver.process();
+            long sleep = until - System.currentTimeMillis();
+            if (sleep <= 0L) {
+                int hashCode = serializer.hashCode(k);
+                try {
+                    releaseReadLock(owner, k, hashCode);
+                } catch (AlreadyReleased e) {
+                    if (ret.get() != null)
+                        break;
+                }
+
+                logger.warn("operation timeout: read=" + k);
+
+                return null;
+            }
+
             synchronized (ret) {
-            	if (ret.get() == null) {
-            		try {
-            			ret.wait();
-            		} catch (InterruptedException ex) {
-            			throw new IllegalStateException(ex);
-            		}
-            	}
+                try {
+                    ret.wait(sleep);
+                } catch (InterruptedException ex) {
+                    throw new IllegalStateException(ex);
+                }
             }
         }
 
@@ -400,56 +394,72 @@ public class CapiCache<K, V> {
     }
 
     public void get(K k, final CacheHandler<K, V> handler) {
-        getWithLock(k, handler);
+        Object owner = new Object();
+        getWithLock(owner, k, handler);
     }
 
-    private void getWithLock(K k, final CacheHandler<K, V> handler) {
+    private void getWithLock(final Object owner, K k, final CacheHandler<K, V> handler) {
         final int hashCode = serializer.hashCode(k);
-        readLock(hashCode);
+        readLock(owner, hashCode);
 
         getWithCellCache(k, hashCode, new InternalCacheHandler<K, V>() {
             @Override
             public void miss(ByteBuffer cellBB, int keylen, K k) {
-                releaseReadLock(k, hashCode);
-                handler.miss(k);
-                PersistenceDriverImpl.freePooled(cellBB);
+                try {
+                    releaseReadLock(owner, k, hashCode);
+                    handler.miss(k);
+                } catch (AlreadyReleased e) {
+                    handler.error(k, e.getMessage());
+                }
             }
 
             @Override
             public void hitInCell(ByteBuffer cellBB, int keylen, K k, ByteBuffer valueBBtmp) {
-                releaseReadLock(k, hashCode);
-                if (valueBBtmp.capacity() == 0)
-                    handler.hit(k, null);
-                else
-                    handler.hit(k, serializer.deserializeValue(valueBBtmp));
-                PersistenceDriverImpl.freePooled(cellBB);
+                try {
+                    releaseReadLock(owner, k, hashCode);
+                    if (valueBBtmp.capacity() == 0)
+                        handler.hit(k, null);
+                    else
+                        handler.hit(k, serializer.deserializeValue(valueBBtmp));
+                } catch (AlreadyReleased e) {
+                    handler.error(k, e.getMessage());
+                }
             }
 
             @Override
             public void hitInKeyList(ByteBuffer cellBB, long kvAddr, ByteBuffer kvBB, K k, int keylen, ByteBuffer valueBBtmp) {
-                releaseReadLock(k, hashCode);
-                if (valueBBtmp.capacity() == 0)
-                    handler.hit(k, null);
-                else
-                    handler.hit(k, serializer.deserializeValue(valueBBtmp));
-                PersistenceDriverImpl.freePooled(cellBB);
+                try {
+                    releaseReadLock(owner, k, hashCode);
+                    if (valueBBtmp.capacity() == 0)
+                        handler.hit(k, null);
+                    else
+                        handler.hit(k, serializer.deserializeValue(valueBBtmp));
+                } catch (AlreadyReleased e) {
+                    handler.error(k, e.getMessage());
+                }
             }
 
             @Override
             public void error(K k, String msg) {
-                releaseReadLock(k, hashCode);
-                handler.error(k, msg);
+                try {
+                    releaseReadLock(owner, k, hashCode);
+                    handler.error(k, msg);
+                } catch (AlreadyReleased e) {
+                    handler.error(k, e.getMessage());
+                }
             }
 
             @Override
             public void hitInExtKeyList(ByteBuffer cellBB, ByteBuffer extListBB, long kvAddr, ByteBuffer kvBB, K k, int keylen, ByteBuffer valueBBtmp) {
-                releaseReadLock(k, hashCode);
-                if (valueBBtmp.capacity() == 0)
-                    handler.hit(k, null);
-                else
-                    handler.hit(k, serializer.deserializeValue(valueBBtmp));
-                PersistenceDriverImpl.freePooled(cellBB);
-                PersistenceDriverImpl.freePooled(extListBB);
+                try {
+                    releaseReadLock(owner, k, hashCode);
+                    if (valueBBtmp.capacity() == 0)
+                        handler.hit(k, null);
+                    else
+                        handler.hit(k, serializer.deserializeValue(valueBBtmp));
+                } catch (AlreadyReleased e) {
+                    handler.error(k, e.getMessage());
+                }
             }
         });
     }
@@ -463,7 +473,7 @@ public class CapiCache<K, V> {
                 ByteBuffer cachedCellBBCopy;
                 synchronized (cachedCellBB) {
                     cachedCellBB.rewind();
-                    cachedCellBBCopy = PersistenceDriverImpl.allocatePooled(cachedCellBB.capacity()).put(cachedCellBB);
+                    cachedCellBBCopy = ByteBuffer.allocateDirect(cachedCellBB.capacity()).put(cachedCellBB);
                 }
                 get0(k, hashCode, handler, cachedCellBBCopy);
             } else {
@@ -471,7 +481,7 @@ public class CapiCache<K, V> {
                 sm.readAsync(cellAddr, cellUnitByteSize, new AsyncHandler() {
                     @Override
                     public void success(ByteBuffer cellBB) {
-                        //cellCaches.put(cellAddr, PersistenceDriverImpl.allocatePooled(cellBB.capacity()).put(cellBB));
+                        //cellCaches.put(cellAddr, CapiChunkDriverImpl.allocatePooled(cellBB.capacity()).put(cellBB));
                         get0(k, hashCode, handler, cellBB);
                     }
 
@@ -562,7 +572,7 @@ public class CapiCache<K, V> {
                 hit = true;
                 final int nextFrom = i + 1;
 
-                int sizeOfBytes = PersistenceDriverImpl.getAlignedSize(entry.kvSize);
+                int sizeOfBytes = CapiChunkDriver.getAlignedSize(entry.kvSize);
                 sm.readAsync(entry.kvAddr, sizeOfBytes, new AsyncHandler() {
                     @Override
                     public void success(ByteBuffer kvBB) {
@@ -658,7 +668,10 @@ public class CapiCache<K, V> {
     public void putSync(K k, final V v) throws IOException {
         final AtomicReference<Object> ret = new AtomicReference<>();
 
-        put(k, v, new CacheHandler<K, V>() {
+        Object owner = new Object();
+        boolean soft = false;
+
+        putWithLock(owner, k, v, new CacheHandler<K, V>() {
 
             @Override
             public void updated(K k) {
@@ -691,7 +704,7 @@ public class CapiCache<K, V> {
                     ret.notify();
                 }
             }
-        });
+        }, soft);
 
         synchronized (ret) {
             while (ret.get() == null)
@@ -707,7 +720,8 @@ public class CapiCache<K, V> {
     }
 
     public void remove(K k) {
-        removeWithLock(k, new CacheHandler<K, V>() {
+        Object owner = new Object();
+        removeWithLock(owner, k, new CacheHandler<K, V>() {
 
             @Override
             public void updated(K k) {
@@ -731,7 +745,10 @@ public class CapiCache<K, V> {
     public void removeSync(K k) throws IOException {
         final AtomicReference<Object> ret = new AtomicReference<>();
 
-        remove(k, new CacheHandler<K, V>() {
+        Object owner = new Object();
+        boolean soft = false;
+
+        removeWithLock(owner, k, new CacheHandler<K, V>() {
 
             @Override
             public void updated(K k) {
@@ -764,7 +781,7 @@ public class CapiCache<K, V> {
                     ret.notify();
                 }
             }
-        });
+        }, soft);
 
         synchronized (ret) {
             while (ret.get() == null)
@@ -780,31 +797,40 @@ public class CapiCache<K, V> {
     }
 
     public void remove(K k, final CacheHandler<K, V> handler) {
-        removeWithLock(k, handler, false);
+        Object owner = new Object();
+        removeWithLock(owner, k, handler, false);
     }
 
-    private void removeWithLock(K k, final CacheHandler<K, V> handler, boolean soft) {
+    private void removeWithLock(final Object owner, K k, final CacheHandler<K, V> handler, boolean soft) {
         final int hashCode = serializer.hashCode(k);
         if (soft) {
-            if (!writeLockSoft(k, hashCode)) {
+            if (!writeLockSoft(owner, k, hashCode)) {
                 handler.error(k, "lock conflict:" + k);
                 return;
             }
         } else {
-            writeLock(k, hashCode);
+            writeLock(owner, k, hashCode);
         }
 
         remove0(k, hashCode, new CacheHandler<K, V>() {
 
             @Override
             public void updated(K k) {
-                releaseWriteLock(k, hashCode);
+                try {
+                    releaseWriteLock(owner, k, hashCode);
+                } catch (AlreadyReleased e) {
+                    handler.error(k, e.getMessage());
+                }
                 handler.updated(k);
             }
 
             @Override
             public void miss(K k) {
-                releaseWriteLock(k, hashCode);
+                try {
+                    releaseWriteLock(owner, k, hashCode);
+                } catch (AlreadyReleased e) {
+                    handler.error(k, e.getMessage());
+                }
                 handler.miss(k);
             }
 
@@ -816,7 +842,11 @@ public class CapiCache<K, V> {
             @Override
             public void error(K k, String msg) {
                 handler.error(k, msg);
-                releaseWriteLock(k, hashCode);
+                try {
+                    releaseWriteLock(owner, k, hashCode);
+                } catch (AlreadyReleased e) {
+                    handler.error(k, e.getMessage());
+                }
             }
         });
     }
@@ -846,7 +876,7 @@ public class CapiCache<K, V> {
                     sm.writeAsync(cellAddr, cellBB, new AsyncHandler() {
                         @Override
                         public void success(ByteBuffer bb) {
-                            //cellCaches.put(cellAddr, PersistenceDriverImpl.allocatePooled(cellBB.capacity()).put(cellBB));
+                            //cellCaches.put(cellAddr, CapiChunkDriverImpl.allocatePooled(cellBB.capacity()).put(cellBB));
                             handler.updated(k);
                         }
 
@@ -980,30 +1010,36 @@ public class CapiCache<K, V> {
     }
 
     public void putSoft(K k, final V v, final CacheHandler<K, V> handler) {
-        putWithLock(k, v, handler, true);
+        Object owner = new Object();
+        putWithLock(owner, k, v, handler, true);
     }
 
     public void put(K k, final V v, final CacheHandler<K, V> handler) {
-        putWithLock(k, v, handler, false);
+        Object owner = new Object();
+        putWithLock(owner, k, v, handler, false);
     }
 
-    private void putWithLock(K k, final V v, final CacheHandler<K, V> handler, boolean soft) {
+    private void putWithLock(final Object owner, K k, final V v, final CacheHandler<K, V> handler, boolean soft) {
         final int hashCode = serializer.hashCode(k);
         if (soft) {
-            if (!writeLockSoft(k, hashCode)) {
+            if (!writeLockSoft(owner, k, hashCode)) {
                 handler.error(k, "lock conflict:" + k);
                 return;
             }
         } else {
-            writeLock(k, hashCode);
+            writeLock(owner, k, hashCode);
         }
 
         put0(k, hashCode, v, new CacheHandler<K, V>() {
 
             @Override
             public void updated(K k) {
-                releaseWriteLock(k, hashCode);
-                handler.updated(k);
+                try {
+                    releaseWriteLock(owner, k, hashCode);
+                    handler.updated(k);
+                } catch (AlreadyReleased e) {
+                    handler.error(k, e.getMessage());
+                }
             }
 
             @Override
@@ -1018,8 +1054,12 @@ public class CapiCache<K, V> {
 
             @Override
             public void error(K k, String msg) {
-                handler.error(k, msg);
-                releaseWriteLock(k, hashCode);
+                try {
+                    handler.error(k, msg);
+                    releaseWriteLock(owner, k, hashCode);
+                } catch (AlreadyReleased e) {
+                    handler.error(k, e.getMessage());
+                }
             }
         });
 
@@ -1212,7 +1252,7 @@ public class CapiCache<K, V> {
             sm.writeAsync(cellAddr, cellBB, new AsyncHandler() {
                 @Override
                 public void success(ByteBuffer bb) {
-                    //cellCaches.put(cellAddr, PersistenceDriverImpl.allocatePooled(cellBB.capacity()).put(cellBB));
+                    //cellCaches.put(cellAddr, CapiChunkDriverImpl.allocatePooled(cellBB.capacity()).put(cellBB));
                     handler.updated(k);
                 }
 
@@ -1227,14 +1267,14 @@ public class CapiCache<K, V> {
         }
     }
 
-    private void copyAndAddKeyList(final ByteBuffer cellBB, ByteBuffer copyKeyBB, final int copyHashCode, ByteBuffer copyValueBB, final int newKeylen, final K newK, final int newHashCode, final int newValuelen, final V newV, final CacheHandler<K, V> handler) {
+    private void copyAndAddKeyList(final ByteBuffer cellBB, final ByteBuffer copyKeyBB, final int copyHashCode, final ByteBuffer copyValueBB, final int newKeylen, final K newK, final int newHashCode, final int newValuelen, final V newV, final CacheHandler<K, V> handler) {
 
         final ByteBuffer copyKvBB = createKeyValueBlock(copyKeyBB, copyHashCode, copyValueBB);
 
         final long copyKvAddr;
         final long alignedSize;
         try {
-            alignedSize = PersistenceDriverImpl.getAlignedSize(copyKvBB.capacity());
+            alignedSize = CapiChunkDriver.getAlignedSize(copyKvBB.capacity());
             copyKvAddr = sm.allocate(alignedSize);
         } catch (IOException e) {
             logger.error(e.getMessage(), e);
@@ -1386,16 +1426,16 @@ public class CapiCache<K, V> {
         List<KeyListEntry> storedList = new ArrayList<>();
         long extKeyListAddr;
         try {
-            extKeyListAddr = sm.allocate(PersistenceDriverImpl.BLOCK_SIZE);
+            extKeyListAddr = sm.allocate(CapiBlockDevice.BLOCK_SIZE);
         } catch (IOException e) {
             logger.error(e.getMessage(), e);
             handler.error(k, e.getMessage());
             return;
         }
 
-        ByteBuffer extKeyListBB = sm.getByteBuffer(PersistenceDriverImpl.BLOCK_SIZE);
+        ByteBuffer extKeyListBB = sm.getByteBuffer(CapiBlockDevice.BLOCK_SIZE);
 
-        modifyExtKeyList(cellBB, extKeyListAddr, PersistenceDriverImpl.BLOCK_SIZE);
+        modifyExtKeyList(cellBB, extKeyListAddr, CapiBlockDevice.BLOCK_SIZE);
 
         addToExtKeyList(cellBB, extKeyListBB, keylen, k, hashCode, valuelen, v, storedList, new CacheHandler<K, V>() {
 
@@ -1408,7 +1448,7 @@ public class CapiCache<K, V> {
                     sm.writeAsync(cellAddr, cellBB, new AsyncHandler() {
                         @Override
                         public void success(ByteBuffer bb) {
-                            //cellCaches.put(cellAddr, PersistenceDriverImpl.allocatePooled(cellBB.capacity()).put(cellBB));
+                            //cellCaches.put(cellAddr, CapiChunkDriverImpl.allocatePooled(cellBB.capacity()).put(cellBB));
                             handler.updated(k);
                         }
 
@@ -1466,7 +1506,7 @@ public class CapiCache<K, V> {
             sm.writeAsync(cellAddr, cellBB, new AsyncHandler() {
                 @Override
                 public void success(ByteBuffer bb) {
-                    //cellCaches.put(cellAddr, PersistenceDriverImpl.allocatePooled(cellBB.capacity()).put(cellBB));
+                    //cellCaches.put(cellAddr, CapiChunkDriverImpl.allocatePooled(cellBB.capacity()).put(cellBB));
                     handler.updated(k);
                 }
 
@@ -1596,7 +1636,7 @@ public class CapiCache<K, V> {
                     sm.writeAsync(cellAddr, cellBB, new AsyncHandler() {
                         @Override
                         public void success(ByteBuffer bb) {
-                            //cellCaches.put(cellAddr, PersistenceDriverImpl.allocatePooled(cellBB.capacity()).put(cellBB));
+                            //cellCaches.put(cellAddr, CapiChunkDriverImpl.allocatePooled(cellBB.capacity()).put(cellBB));
                             sm.free(obsoleteExtKeyListAddr, extListBytes);
                             System.out.println("grew ext key list: " + obsoleteExtKeyListAddr + "->" + newExtKeyListAddr);
                             handler.updated(k);
@@ -1668,7 +1708,7 @@ public class CapiCache<K, V> {
     }
 
     private ByteBuffer createKeyValueBlock(int keylen, final K k, final int hashCode, final int valuelen, V v) {
-        final int alignedSize = PersistenceDriverImpl.getAlignedSize(keylen + valuelen + KV_OVERHEAD);
+        final int alignedSize = CapiChunkDriver.getAlignedSize(keylen + valuelen + KV_OVERHEAD);
         int position;
         final ByteBuffer kvBB = sm.getByteBuffer(alignedSize);
 
@@ -1696,7 +1736,7 @@ public class CapiCache<K, V> {
     }
 
     private ByteBuffer createKeyValueBlock(ByteBuffer keyBB, final int hashCode, ByteBuffer valueBB) {
-        final int alignedSize = PersistenceDriverImpl.getAlignedSize(keyBB.capacity() + valueBB.capacity() + KV_OVERHEAD);
+        final int alignedSize = CapiChunkDriver.getAlignedSize(keyBB.capacity() + valueBB.capacity() + KV_OVERHEAD);
         final ByteBuffer kvBB = sm.getByteBuffer(alignedSize);
 
         kvBB.putInt(keyBB.capacity()); // 1. key length
@@ -1847,7 +1887,7 @@ public class CapiCache<K, V> {
 
         flush();
 
-        for (PersistenceDriver driver : drivers)
+        for (CapiChunkDriver driver : drivers)
             driver.close();
 
     }

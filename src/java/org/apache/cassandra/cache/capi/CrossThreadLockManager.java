@@ -1,17 +1,25 @@
 package org.apache.cassandra.cache.capi;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 public class CrossThreadLockManager<K> {
-    private static final Logger logger = LoggerFactory.getLogger(CrossThreadLockManager.class);
+
+    static class LockState {
+        Object owner;
+        boolean write;
+
+        LockState(Object owner, boolean write) {
+            this.owner = owner;
+            this.write = write;
+        }
+    }
 
     private static int NUM_OF_SLOT = 1023;
     @SuppressWarnings("unchecked")
-    private final Map<K, Integer>[] lockEntrySlots = new HashMap[NUM_OF_SLOT];
+    private final Map<K, List<LockState>>[] lockEntrySlots = new HashMap[NUM_OF_SLOT];
 
     CrossThreadLockManager() {
         for (int i = 0; i < NUM_OF_SLOT; ++i)
@@ -25,7 +33,7 @@ public class CrossThreadLockManager<K> {
         return ret;
     }
 
-    private Map<K, Integer> getEntrySlot(K k) {
+    private Map<K, List<LockState>> getEntrySlot(K k) {
         try {
             int hashCode = k.hashCode();
 
@@ -39,211 +47,96 @@ public class CrossThreadLockManager<K> {
         }
     }
 
-    public boolean readLock(K k) {
-        //logger.info("rlock:" + k + "(" + k.hashCode() + ":" + (Math.abs(k.hashCode()) % lockEntrySlots.length) + ")");
+    public boolean readLock(Object owner, K k) {
+        return readLock(owner, k, false);
+    }
+
+    public boolean readLock(Object owner, K k, boolean block) {
         while (true) {
-            Map<K, Integer> slot = getEntrySlot(k);
+            Map<K, List<LockState>> slot = getEntrySlot(k);
             synchronized (slot) {
-                Integer lock = slot.get(k);
-                if (lock == null) {
-                    slot.put(k, 1);
+                List<LockState> lockStates = slot.get(k);
+                if (lockStates == null) {
+                    lockStates = new ArrayList<>();
+                    lockStates.add(new LockState(owner, false));
+                    slot.put(k, lockStates);
                     return true;
                 }
-                if (lock == -1) {
+                if (lockStates.size() == 1 && lockStates.get(0).write) {
+                    if (!block)
+                        return false;
+                    try {
+                        slot.wait();
+                    } catch (InterruptedException e) {
+                        throw new IllegalStateException(e);
+                    }
+                } else {
+                    lockStates.add(new LockState(owner, false));
+                    return true;
+                }
+            }
+        }
+    }
+
+    public boolean writeLock(Object owner, K k) {
+        return writeLock(owner, k, false);
+    }
+
+    public boolean writeLock(Object owner, K k, boolean block) {
+        while (true) {
+            Map<K, List<LockState>> slot = getEntrySlot(k);
+            synchronized (slot) {
+                List<LockState> lockStates = slot.get(k);
+                if (lockStates == null) {
+                    lockStates = new ArrayList<>();
+                    lockStates.add(new LockState(owner, true));
+                    slot.put(k, lockStates);
+                    return true;
+                }
+                if (!block)
                     return false;
-                } else {
-                    slot.put(k, lock + 1);
-                    return true;
+                try {
+                    slot.wait();
+                } catch (InterruptedException e) {
+                    throw new IllegalStateException(e);
                 }
             }
         }
     }
 
-    public boolean writeLock(K k) {
-        //logger.info("wlock:" + k + "(" + k.hashCode() + ":" + (Math.abs(k.hashCode()) % lockEntrySlots.length) + ")");
-        while (true) {
-            Map<K, Integer> slot = getEntrySlot(k);
-            synchronized (slot) {
-                Integer lock = slot.get(k);
-                if (lock == null) {
-                    slot.put(k, -1);
-                    return true;
-                }
-                //logger.info("wlock-wait:" + k + "(" + k.hashCode() + ":" + (k.hashCode() % lockEntrySlots.length) + ")");
-                //logger.info("wlock-again:" + k + "(" + k.hashCode() + ":" + (k.hashCode() % lockEntrySlots.length) + ")");
-                return false;
-            }
+    @SuppressWarnings("serial")
+    public static class AlreadyReleased extends Exception {
+
+        AlreadyReleased(String msg) {
+            super(msg);
         }
     }
 
-    public void release(K k) {
-        //logger.info("release:" + k + ":" + k.hashCode() + ":" + Math.abs(k.hashCode()) + ":"+ "(" + (Math.abs(k.hashCode()) % lockEntrySlots.length) + ")");
-        Map<K, Integer> slot = getEntrySlot(k);
+    public void release(Object owner, K k) throws AlreadyReleased {
+        Map<K, List<LockState>> slot = getEntrySlot(k);
         synchronized (slot) {
-            Integer lock = slot.get(k);
-            if (lock == null)
-                throw new IllegalStateException("too much release");
-            if (lock == -1) {
+            List<LockState> lockStates = slot.get(k);
+            if (lockStates == null)
+                throw new AlreadyReleased("already released: key=" + k);
+            if (lockStates.size() == 1 && lockStates.get(0).write) {
                 slot.remove(k);
             } else {
-                --lock;
-                if (lock == 0) {
+                LockState lockState = null;
+                for (LockState tmp : lockStates) {
+                    if (tmp.owner == owner) {
+                        lockState = tmp;
+                        break;
+                    }
+                }
+                if (lockState == null)
+                    throw new AlreadyReleased("already released: key=" + k);
+
+                lockStates.remove(lockState);
+                if (lockStates.isEmpty()) {
                     slot.remove(k);
-                    //System.out.println("release: " + k);
-                } else {
-                    slot.put(k, lock);
                 }
             }
+            slot.notifyAll();
         }
     }
-
-    public void releaseRead(K k) {
-        //logger.info("release:" + k + ":" + k.hashCode() + ":" + Math.abs(k.hashCode()) + ":"+ "(" + (Math.abs(k.hashCode()) % lockEntrySlots.length) + ")");
-        Map<K, Integer> slot = getEntrySlot(k);
-        synchronized (slot) {
-            Integer lock = slot.get(k);
-            if (lock == null)
-                throw new IllegalStateException("too much release");
-            if (lock == -1) {
-                logger.error("lock for write. releae for read.");
-                slot.remove(k);
-            } else {
-                --lock;
-                if (lock == 0) {
-                    slot.remove(k);
-                    //System.out.println("release: " + k);
-                } else {
-                    slot.put(k, lock);
-                }
-            }
-        }
-    }
-
-    public void releaseWrite(K k) {
-        //logger.info("release:" + k + ":" + k.hashCode() + ":" + Math.abs(k.hashCode()) + ":"+ "(" + (Math.abs(k.hashCode()) % lockEntrySlots.length) + ")");
-        Map<K, Integer> slot = getEntrySlot(k);
-        synchronized (slot) {
-            Integer lock = slot.get(k);
-            if (lock == null)
-                throw new IllegalStateException("too much release");
-            if (lock == -1) {
-                slot.remove(k);
-            } else {
-                --lock;
-                logger.error("lock for read. releae for write.");
-                if (lock == 0) {
-                    slot.remove(k);
-                    //System.out.println("release: " + k);
-                } else {
-                    slot.put(k, lock);
-                }
-            }
-        }
-    }
-
-    // private final ConcurrentHashMap<K, AtomicInteger> locks = new ConcurrentHashMap<>();
-    //
-    // public int size() {
-    // return locks.size();
-    // }
-    //
-    // public void readLock(K k) {
-    // AtomicInteger lock = locks.get(k);
-    // AtomicInteger tmp;
-    // while (true) {
-    // if (lock == null) {
-    // lock = new AtomicInteger(1);
-    // tmp = locks.putIfAbsent(k, lock);
-    // if (tmp == null)
-    // return;
-    // lock = tmp;
-    // }
-    //
-    // if (lock.get() < 0) {
-    // synchronized (lock) {
-    // while (lock.get() < 0) {
-    // try {
-    // lock.wait();
-    // } catch (InterruptedException e) {
-    // e.printStackTrace();
-    // }
-    // }
-    // }
-    // }
-    //
-    // int count = lock.get();
-    // if (count >= 0 && lock.compareAndSet(count, count + 1))
-    // return;
-    //
-    // lock = locks.get(k);
-    // }
-    // }
-    //
-    // public void release(K k) {
-    // AtomicInteger lock = locks.get(k);
-    // if (lock == null)
-    // throw new IllegalStateException();
-    //
-    // if (lock.get() > 0)
-    // releaseReadlock(k, lock);
-    // else
-    // releaseWritelock(k, lock);
-    //
-    // }
-    //
-    // private void releaseReadlock(K k, AtomicInteger lock) {
-    // int count = lock.decrementAndGet();
-    // if (count == 0) {
-    // if (lock.compareAndSet(0, -1)) {
-    // locks.remove(k);
-    // lock.set(0);
-    // synchronized (lock) {
-    // lock.notifyAll();
-    // }
-    // return;
-    // }
-    // }
-    // }
-    //
-    // private void releaseWritelock(K k, AtomicInteger lock) {
-    // locks.remove(k);
-    // lock.set(0);
-    // synchronized (lock) {
-    // lock.notifyAll();
-    // }
-    // }
-    //
-    // public void writeLock(K k) {
-    // AtomicInteger lock = locks.get(k);
-    // AtomicInteger tmp;
-    // while (true) {
-    // if (lock == null) {
-    // lock = new AtomicInteger(-1);
-    // tmp = locks.putIfAbsent(k, lock);
-    // if (tmp == null)
-    // return;
-    // lock = tmp;
-    // }
-    //
-    // while (true) {
-    // synchronized (lock) {
-    // tmp = locks.get(k);
-    // if (tmp == null) {
-    // lock = null;
-    // break;
-    // }
-    // if (tmp == lock) {
-    // try {
-    // lock.wait();
-    // } catch (InterruptedException e) {
-    // e.printStackTrace();
-    // }
-    // } else {
-    // lock = tmp;
-    // }
-    // }
-    // }
-    // }
-    // }
-
 }
