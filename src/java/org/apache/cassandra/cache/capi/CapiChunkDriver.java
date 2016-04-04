@@ -35,6 +35,8 @@ public class CapiChunkDriver {
     public static int numOfQueue = Integer.parseInt(System.getProperty("capi.driver.queue", "4"));
     public static int FLUSH_QUEUE_MAX_DEPTH = Integer.parseInt(System.getProperty("capi.driver.queue.max", "10000"));
 
+    public static boolean polling = System.getProperty("capi.driver.thread.polling") != null;
+
     public static int getAlignedSize(int size) {
         return getLBASize(size) * CapiBlockDevice.BLOCK_SIZE;
     }
@@ -67,7 +69,7 @@ public class CapiChunkDriver {
     public CapiChunkDriver(String[] deviceNames, int numOfAsync, int numOfQueues) throws IOException {
         this(deviceNames, numOfAsync, numOfMinThreads, numOfMaxThreads, numOfQueues);
     }
-    
+
     public CapiChunkDriver(String[] deviceNames, int numOfAsync, int numOfMinThreads, int numOfMaxThreads, int numOfDrivers) throws IOException {
         this.deviceNames = deviceNames;
         this.queues = new TaskQueue[numOfDrivers];
@@ -217,6 +219,7 @@ public class CapiChunkDriver {
         final AtomicInteger nextChunk = new AtomicInteger(0);
 
         final ExecutorService service;
+        final Thread[] flushThreads;
 
         public TaskQueue(int numOfAsync, int numOfMinThreads, int numOfMaxThreads) throws IOException {
             this.chunks = new Chunk[deviceNames.length];
@@ -227,7 +230,24 @@ public class CapiChunkDriver {
 
             this.numOfAsync = numOfAsync;
 
-            this.service = new ThreadPoolExecutor(numOfMinThreads, numOfMaxThreads, 100, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<Runnable>(FLUSH_QUEUE_MAX_DEPTH));
+            if (polling) {
+                this.flushThreads = new Thread[numOfMinThreads];
+                for (int i = 0; i < numOfMinThreads; ++i) {
+                    this.flushThreads[i] = new Thread() {
+                        public void run() {
+                            Flush flush = new Flush();
+                            while (!closed.get()) {
+                                flush.process();
+                            }
+                        }
+                    };
+                    this.flushThreads[i].start();
+                }
+                this.service = null;
+            } else {
+                this.flushThreads = null;
+                this.service = new ThreadPoolExecutor(numOfMinThreads, numOfMaxThreads, 100, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<Runnable>(FLUSH_QUEUE_MAX_DEPTH));
+            }
 
             for (int i = 0; i < FLUSH_QUEUE_MAX_DEPTH; ++i)
                 flushTaskPool.add(new Flush());
@@ -329,7 +349,9 @@ public class CapiChunkDriver {
                 flush = new Flush();
 
             numOfRequesting.incrementAndGet();
-            service.submit(flush);
+
+            if (service != null)
+                service.submit(flush);
         }
 
         public void close() throws IOException {
@@ -337,7 +359,9 @@ public class CapiChunkDriver {
             for (Chunk chunk : chunks)
                 chunk.close();
 
-            service.shutdown();
+            if (service != null)
+                service.shutdown();
+
             closed.set(true);
         }
 
@@ -429,7 +453,7 @@ public class CapiChunkDriver {
             private void process() {
                 Task joining = null;
                 Task next = null;
-                while (numOfRequesting.get() != 0) {
+                while (numOfRequesting.get() != 0 && !closed.get()) {
                     int currentConcurrency = concurrency.get();
 
                     if (currentConcurrency < numOfAsync) {
