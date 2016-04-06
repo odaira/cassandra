@@ -104,7 +104,8 @@ public class FastByteOperations
         {
             String arch = System.getProperty("os.arch");
             boolean unaligned = arch.equals("i386") || arch.equals("x86")
-                                || arch.equals("amd64") || arch.equals("x86_64");
+                                || arch.equals("amd64") || arch.equals("x86_64")
+                                || arch.equals("ppc") || arch.equals("ppc64") || arch.equals("ppc64le");
             if (!unaligned)
                 return new PureJavaOperations();
             try
