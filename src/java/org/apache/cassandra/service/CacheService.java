@@ -50,6 +50,8 @@ import org.apache.cassandra.db.partitions.CachedPartition;
 import org.apache.cassandra.db.context.CounterContext;
 import org.apache.cassandra.io.util.DataInputPlus;
 import org.apache.cassandra.io.util.DataOutputPlus;
+import org.apache.cassandra.service.CacheService.CacheType;
+import org.apache.cassandra.service.CacheService.RowCacheSerializer;
 import org.apache.cassandra.io.sstable.format.big.BigFormat;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
@@ -148,9 +150,18 @@ public class CacheService implements CacheServiceMBean
             throw new RuntimeException("Cannot find configured row cache provider class " + DatabaseDescriptor.getRowCacheClassName());
         }
 
+        long rowCacheInMemoryCapacity = DatabaseDescriptor.getRowCacheSizeInMB() * 1024 * 1024;
+
         // cache object
         ICache<RowCacheKey, IRowCacheEntry> rc = cacheProvider.create();
+        String cacheType = System.getProperty("rowcache.type");
+        if ("capi".equals(cacheType))
+            rc = new CapiBlockRowCache(rowCacheInMemoryCapacity);
+        else
+            rc = cacheProvider.create();
         AutoSavingCache<RowCacheKey, IRowCacheEntry> rowCache = new AutoSavingCache<>(rc, CacheType.ROW_CACHE, new RowCacheSerializer());
+        
+        logger.info("row cache type: " + (cacheType == null ? "default" : cacheType) + ":" + rc.getClass().getName());
 
         int rowCacheKeysToSave = DatabaseDescriptor.getRowCacheKeysToSave();
 
