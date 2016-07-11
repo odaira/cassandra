@@ -19,7 +19,6 @@
 package org.apache.cassandra.db.compaction;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
@@ -104,7 +103,7 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
         if (System.currentTimeMillis() - lastExpiredCheck > options.expiredSSTableCheckFrequency)
         {
             logger.debug("TWCS expired check sufficiently far in the past, checking for fully expired SSTables");
-            expired = CompactionController.getFullyExpiredSSTables(cfs, uncompacting, cfs.getOverlappingSSTables(SSTableSet.CANONICAL, uncompacting), gcBefore);
+            expired = CompactionController.getFullyExpiredSSTables(cfs, uncompacting, cfs.getOverlappingLiveSSTables(uncompacting), gcBefore);
             lastExpiredCheck = System.currentTimeMillis();
         }
         else
@@ -158,8 +157,6 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
         List<SSTableReader> mostInteresting = newestBucket(buckets.left,
                                                            cfs.getMinimumCompactionThreshold(),
                                                            cfs.getMaximumCompactionThreshold(),
-                                                           options.sstableWindowUnit,
-                                                           options.sstableWindowSize,
                                                            options.stcsOptions,
                                                            this.highestWindowSeen);
         if (!mostInteresting.isEmpty())
@@ -192,16 +189,16 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
         switch(windowTimeUnit)
         {
             case MINUTES:
-                lowerTimestamp = timestampInSeconds - ((timestampInSeconds) % (60 * windowTimeSize));
+                lowerTimestamp = timestampInSeconds - ((timestampInSeconds) % (60L * windowTimeSize));
                 upperTimestamp = (lowerTimestamp + (60L * (windowTimeSize - 1L))) + 59L;
                 break;
             case HOURS:
-                lowerTimestamp = timestampInSeconds - ((timestampInSeconds) % (3600 * windowTimeSize));
+                lowerTimestamp = timestampInSeconds - ((timestampInSeconds) % (3600L * windowTimeSize));
                 upperTimestamp = (lowerTimestamp + (3600L * (windowTimeSize - 1L))) + 3599L;
                 break;
             case DAYS:
             default:
-                lowerTimestamp = timestampInSeconds - ((timestampInSeconds) % (86400 * windowTimeSize));
+                lowerTimestamp = timestampInSeconds - ((timestampInSeconds) % (86400L * windowTimeSize));
                 upperTimestamp = (lowerTimestamp + (86400L * (windowTimeSize - 1L))) + 86399L;
                 break;
         }
@@ -267,7 +264,7 @@ public class TimeWindowCompactionStrategy extends AbstractCompactionStrategy
      * @return a bucket (list) of sstables to compact.
      */
     @VisibleForTesting
-    static List<SSTableReader> newestBucket(HashMultimap<Long, SSTableReader> buckets, int minThreshold, int maxThreshold, TimeUnit sstableWindowUnit, int sstableWindowSize, SizeTieredCompactionStrategyOptions stcsOptions, long now)
+    static List<SSTableReader> newestBucket(HashMultimap<Long, SSTableReader> buckets, int minThreshold, int maxThreshold, SizeTieredCompactionStrategyOptions stcsOptions, long now)
     {
         // If the current bucket has at least minThreshold SSTables, choose that one.
         // For any other bucket, at least 2 SSTables is enough.

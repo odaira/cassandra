@@ -266,18 +266,11 @@ while true; do
 done
 
 if [ "x$allow_root" != "xyes" ] ; then
-    if [ "`id -u`" = "1" ] || [ "`id -g`" = "0" ] ; then
+    if [ "`id -u`" = "0" ] || [ "`id -g`" = "0" ] ; then
         echo "Running Cassandra as root user or group is not recommended - please start Cassandra using a different system user."
         echo "If you really want to force running Cassandra as root, use -R command line option."
         exit 1
     fi
-fi
-
-# see CASSANDRA-7254
-"$JAVA" -cp "$CLASSPATH" $JVM_OPTS 2>&1 | grep -q 'Error: Exception thrown by the agent : java.lang.NullPointerException'
-if [ $? -ne "1" ]; then 
-    echo Unable to bind JMX, is Cassandra already running?
-    exit 1;
 fi
 
 # Start up the service

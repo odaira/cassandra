@@ -67,6 +67,7 @@ import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.locator.ILatencySubscriber;
 import org.apache.cassandra.metrics.ConnectionMetrics;
 import org.apache.cassandra.metrics.DroppedMessageMetrics;
+import org.apache.cassandra.metrics.MessagingMetrics;
 import org.apache.cassandra.repair.messages.RepairMessage;
 import org.apache.cassandra.security.SSLFactory;
 import org.apache.cassandra.service.*;
@@ -100,6 +101,8 @@ public final class MessagingService implements MessagingServiceMBean
 
     private boolean allNodesAtLeast22 = true;
     private boolean allNodesAtLeast30 = true;
+
+    public final MessagingMetrics metrics = new MessagingMetrics();
 
     /* All verb handler identifiers */
     public enum Verb
@@ -1064,10 +1067,12 @@ public final class MessagingService implements MessagingServiceMBean
         return ret;
     }
 
-    private static class SocketThread extends Thread
+    @VisibleForTesting
+    public static class SocketThread extends Thread
     {
         private final ServerSocket server;
-        private final Set<Closeable> connections = Sets.newConcurrentHashSet();
+        @VisibleForTesting
+        public final Set<Closeable> connections = Sets.newConcurrentHashSet();
 
         SocketThread(ServerSocket server, String name)
         {
@@ -1287,5 +1292,11 @@ public final class MessagingService implements MessagingServiceMBean
             throw new AssertionError(String.format("Partitioner in bounds serialization. Expected %s, was %s.",
                                                    globalPartitioner().getClass().getName(),
                                                    bounds.left.getPartitioner().getClass().getName()));
+    }
+
+    @VisibleForTesting
+    public List<SocketThread> getSocketThreads()
+    {
+        return socketThreads;
     }
 }

@@ -41,7 +41,7 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.functions.*;
-import org.apache.cassandra.db.commitlog.ReplayPosition;
+import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.compaction.CompactionHistoryTabularData;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
@@ -97,6 +97,7 @@ public final class SystemKeyspace
     public static final String AVAILABLE_RANGES = "available_ranges";
     public static final String VIEWS_BUILDS_IN_PROGRESS = "views_builds_in_progress";
     public static final String BUILT_VIEWS = "built_views";
+    public static final String PREPARED_STATEMENTS = "prepared_statements";
 
     @Deprecated public static final String LEGACY_HINTS = "hints";
     @Deprecated public static final String LEGACY_BATCHLOG = "batchlog";
@@ -264,6 +265,15 @@ public final class SystemKeyspace
                 + "view_name text,"
                 + "status_replicated boolean,"
                 + "PRIMARY KEY ((keyspace_name), view_name))");
+
+    private static final CFMetaData PreparedStatements =
+        compile(PREPARED_STATEMENTS,
+                "prepared statements",
+                "CREATE TABLE %s ("
+                + "prepared_id blob,"
+                + "logged_keyspace text,"
+                + "query_string text,"
+                + "PRIMARY KEY ((prepared_id)))");
 
     @Deprecated
     public static final CFMetaData LegacyHints =
@@ -435,6 +445,7 @@ public final class SystemKeyspace
                          BuiltViews,
                          LegacyHints,
                          LegacyBatchlog,
+                         PreparedStatements,
                          LegacyKeyspaces,
                          LegacyColumnfamilies,
                          LegacyColumns,
@@ -455,7 +466,7 @@ public final class SystemKeyspace
                         .build();
     }
 
-    private static volatile Map<UUID, Pair<ReplayPosition, Long>> truncationRecords;
+    private static volatile Map<UUID, Pair<CommitLogPosition, Long>> truncationRecords;
 
     public enum BootstrapState
     {
@@ -619,7 +630,7 @@ public final class SystemKeyspace
         return Pair.create(generation, lastKey);
     }
 
-    public static synchronized void saveTruncationRecord(ColumnFamilyStore cfs, long truncatedAt, ReplayPosition position)
+    public static synchronized void saveTruncationRecord(ColumnFamilyStore cfs, long truncatedAt, CommitLogPosition position)
     {
         String req = "UPDATE system.%s SET truncated_at = truncated_at + ? WHERE key = '%s'";
         executeInternal(String.format(req, LOCAL, LOCAL), truncationAsMapEntry(cfs, truncatedAt, position));
@@ -638,44 +649,49 @@ public final class SystemKeyspace
         forceBlockingFlush(LOCAL);
     }
 
-    private static Map<UUID, ByteBuffer> truncationAsMapEntry(ColumnFamilyStore cfs, long truncatedAt, ReplayPosition position)
+    private static Map<UUID, ByteBuffer> truncationAsMapEntry(ColumnFamilyStore cfs, long truncatedAt, CommitLogPosition position)
     {
-        try (DataOutputBuffer out = new DataOutputBuffer())
+        DataOutputBuffer out = null;
+        try (DataOutputBuffer ignored = out = DataOutputBuffer.RECYCLER.get())
         {
-            ReplayPosition.serializer.serialize(position, out);
+            CommitLogPosition.serializer.serialize(position, out);
             out.writeLong(truncatedAt);
-            return singletonMap(cfs.metadata.cfId, ByteBuffer.wrap(out.getData(), 0, out.getLength()));
+            return singletonMap(cfs.metadata.cfId, out.asNewBuffer());
         }
         catch (IOException e)
         {
             throw new RuntimeException(e);
         }
+        finally
+        {
+            out.recycle();
+        }
     }
 
-    public static ReplayPosition getTruncatedPosition(UUID cfId)
+    public static CommitLogPosition getTruncatedPosition(UUID cfId)
     {
-        Pair<ReplayPosition, Long> record = getTruncationRecord(cfId);
+        Pair<CommitLogPosition, Long> record = getTruncationRecord(cfId);
         return record == null ? null : record.left;
     }
 
     public static long getTruncatedAt(UUID cfId)
     {
-        Pair<ReplayPosition, Long> record = getTruncationRecord(cfId);
+        Pair<CommitLogPosition, Long> record = getTruncationRecord(cfId);
         return record == null ? Long.MIN_VALUE : record.right;
     }
 
-    private static synchronized Pair<ReplayPosition, Long> getTruncationRecord(UUID cfId)
+    private static synchronized Pair<CommitLogPosition, Long> getTruncationRecord(UUID cfId)
     {
         if (truncationRecords == null)
             truncationRecords = readTruncationRecords();
         return truncationRecords.get(cfId);
     }
 
-    private static Map<UUID, Pair<ReplayPosition, Long>> readTruncationRecords()
+    private static Map<UUID, Pair<CommitLogPosition, Long>> readTruncationRecords()
     {
         UntypedResultSet rows = executeInternal(String.format("SELECT truncated_at FROM system.%s WHERE key = '%s'", LOCAL, LOCAL));
 
-        Map<UUID, Pair<ReplayPosition, Long>> records = new HashMap<>();
+        Map<UUID, Pair<CommitLogPosition, Long>> records = new HashMap<>();
 
         if (!rows.isEmpty() && rows.one().has("truncated_at"))
         {
@@ -687,11 +703,11 @@ public final class SystemKeyspace
         return records;
     }
 
-    private static Pair<ReplayPosition, Long> truncationRecordFromBlob(ByteBuffer bytes)
+    private static Pair<CommitLogPosition, Long> truncationRecordFromBlob(ByteBuffer bytes)
     {
         try (RebufferingInputStream in = new DataInputBuffer(bytes, true))
         {
-            return Pair.create(ReplayPosition.serializer.deserialize(in), in.available() > 0 ? in.readLong() : Long.MIN_VALUE);
+            return Pair.create(CommitLogPosition.serializer.deserialize(in), in.available() > 0 ? in.readLong() : Long.MIN_VALUE);
         }
         catch (IOException e)
         {
@@ -1098,10 +1114,10 @@ public final class SystemKeyspace
         return null;
     }
 
-    public static PaxosState loadPaxosState(DecoratedKey key, CFMetaData metadata)
+    public static PaxosState loadPaxosState(DecoratedKey key, CFMetaData metadata, int nowInSec)
     {
         String req = "SELECT * FROM system.%s WHERE row_key = ? AND cf_id = ?";
-        UntypedResultSet results = executeInternal(String.format(req, PAXOS), key.getKey(), metadata.cfId);
+        UntypedResultSet results = QueryProcessor.executeInternalWithNow(nowInSec, String.format(req, PAXOS), key.getKey(), metadata.cfId);
         if (results.isEmpty())
             return new PaxosState(key, metadata);
         UntypedResultSet.Row row = results.one();
@@ -1126,7 +1142,7 @@ public final class SystemKeyspace
         String req = "UPDATE system.%s USING TIMESTAMP ? AND TTL ? SET in_progress_ballot = ? WHERE row_key = ? AND cf_id = ?";
         executeInternal(String.format(req, PAXOS),
                         UUIDGen.microsTimestamp(promise.ballot),
-                        paxosTtl(promise.update.metadata()),
+                        paxosTtlSec(promise.update.metadata()),
                         promise.ballot,
                         promise.update.partitionKey().getKey(),
                         promise.update.metadata().cfId);
@@ -1136,7 +1152,7 @@ public final class SystemKeyspace
     {
         executeInternal(String.format("UPDATE system.%s USING TIMESTAMP ? AND TTL ? SET proposal_ballot = ?, proposal = ?, proposal_version = ? WHERE row_key = ? AND cf_id = ?", PAXOS),
                         UUIDGen.microsTimestamp(proposal.ballot),
-                        paxosTtl(proposal.update.metadata()),
+                        paxosTtlSec(proposal.update.metadata()),
                         proposal.ballot,
                         PartitionUpdate.toBytes(proposal.update, MessagingService.current_version),
                         MessagingService.current_version,
@@ -1144,7 +1160,7 @@ public final class SystemKeyspace
                         proposal.update.metadata().cfId);
     }
 
-    private static int paxosTtl(CFMetaData metadata)
+    public static int paxosTtlSec(CFMetaData metadata)
     {
         // keep paxos state around for at least 3h
         return Math.max(3 * 3600, metadata.params.gcGraceSeconds);
@@ -1157,7 +1173,7 @@ public final class SystemKeyspace
         String cql = "UPDATE system.%s USING TIMESTAMP ? AND TTL ? SET proposal_ballot = null, proposal = null, most_recent_commit_at = ?, most_recent_commit = ?, most_recent_commit_version = ? WHERE row_key = ? AND cf_id = ?";
         executeInternal(String.format(cql, PAXOS),
                         UUIDGen.microsTimestamp(commit.ballot),
-                        paxosTtl(commit.update.metadata()),
+                        paxosTtlSec(commit.update.metadata()),
                         commit.ballot,
                         PartitionUpdate.toBytes(commit.update, MessagingService.current_version),
                         MessagingService.current_version,
@@ -1407,4 +1423,31 @@ public final class SystemKeyspace
         }
     }
 
+    public static void writePreparedStatement(String loggedKeyspace, MD5Digest key, String cql)
+    {
+        executeInternal(String.format("INSERT INTO %s.%s"
+                                      + " (logged_keyspace, prepared_id, query_string) VALUES (?, ?, ?)",
+                                      NAME, PREPARED_STATEMENTS),
+                        loggedKeyspace, key.byteBuffer(), cql);
+        logger.debug("stored prepared statement for logged keyspace '{}': '{}'", loggedKeyspace, cql);
+    }
+
+    public static void removePreparedStatement(MD5Digest key)
+    {
+        executeInternal(String.format("DELETE FROM %s.%s"
+                                      + " WHERE prepared_id = ?",
+                                      NAME, PREPARED_STATEMENTS),
+                        key.byteBuffer());
+    }
+
+    public static List<Pair<String, String>> loadPreparedStatements()
+    {
+        String query = String.format("SELECT logged_keyspace, query_string FROM %s.%s", NAME, PREPARED_STATEMENTS);
+        UntypedResultSet resultSet = executeOnceInternal(query);
+        List<Pair<String, String>> r = new ArrayList<>();
+        for (UntypedResultSet.Row row : resultSet)
+            r.add(Pair.create(row.has("logged_keyspace") ? row.getString("logged_keyspace") : null,
+                              row.getString("query_string")));
+        return r;
+    }
 }

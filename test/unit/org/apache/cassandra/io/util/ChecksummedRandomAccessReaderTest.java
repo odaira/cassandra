@@ -27,10 +27,6 @@ import java.util.concurrent.ThreadLocalRandom;
 import org.junit.Test;
 
 import static org.junit.Assert.*;
-import org.apache.cassandra.io.util.ChecksummedRandomAccessReader;
-import org.apache.cassandra.io.util.ChecksummedSequentialWriter;
-import org.apache.cassandra.io.util.RandomAccessReader;
-import org.apache.cassandra.io.util.SequentialWriter;
 
 public class ChecksummedRandomAccessReaderTest
 {
@@ -43,21 +39,23 @@ public class ChecksummedRandomAccessReaderTest
         final byte[] expected = new byte[70 * 1024];   // bit more than crc chunk size, so we can test rebuffering.
         ThreadLocalRandom.current().nextBytes(expected);
 
-        SequentialWriter writer = ChecksummedSequentialWriter.open(data, crc);
-        writer.write(expected);
-        writer.finish();
+        try (SequentialWriter writer = new ChecksummedSequentialWriter(data, crc, null, SequentialWriterOption.DEFAULT))
+        {
+            writer.write(expected);
+            writer.finish();
+        }
 
         assert data.exists();
 
-        RandomAccessReader reader = new ChecksummedRandomAccessReader.Builder(data, crc).build();
-        byte[] b = new byte[expected.length];
-        reader.readFully(b);
+        try (RandomAccessReader reader = ChecksummedRandomAccessReader.open(data, crc))
+        {
+            byte[] b = new byte[expected.length];
+            reader.readFully(b);
 
-        assertArrayEquals(expected, b);
+            assertArrayEquals(expected, b);
 
-        assertTrue(reader.isEOF());
-
-        reader.close();
+            assertTrue(reader.isEOF());
+        }
     }
 
     @Test
@@ -69,30 +67,32 @@ public class ChecksummedRandomAccessReaderTest
         final byte[] dataBytes = new byte[70 * 1024];   // bit more than crc chunk size
         ThreadLocalRandom.current().nextBytes(dataBytes);
 
-        SequentialWriter writer = ChecksummedSequentialWriter.open(data, crc);
-        writer.write(dataBytes);
-        writer.finish();
+        try (SequentialWriter writer = new ChecksummedSequentialWriter(data, crc, null, SequentialWriterOption.DEFAULT))
+        {
+            writer.write(dataBytes);
+            writer.finish();
+        }
 
         assert data.exists();
 
-        RandomAccessReader reader = new ChecksummedRandomAccessReader.Builder(data, crc).build();
+        try (RandomAccessReader reader = ChecksummedRandomAccessReader.open(data, crc))
+        {
 
-        final int seekPosition = 66000;
-        reader.seek(seekPosition);
+            final int seekPosition = 66000;
+            reader.seek(seekPosition);
 
-        byte[] b = new byte[dataBytes.length - seekPosition];
-        reader.readFully(b);
+            byte[] b = new byte[dataBytes.length - seekPosition];
+            reader.readFully(b);
 
-        byte[] expected = Arrays.copyOfRange(dataBytes, seekPosition, dataBytes.length);
+            byte[] expected = Arrays.copyOfRange(dataBytes, seekPosition, dataBytes.length);
 
-        assertArrayEquals(expected, b);
+            assertArrayEquals(expected, b);
 
-        assertTrue(reader.isEOF());
-
-        reader.close();
+            assertTrue(reader.isEOF());
+        }
     }
 
-    @Test(expected = ChecksummedRandomAccessReader.CorruptFileException.class)
+    @Test(expected = CorruptFileException.class)
     public void corruptionDetection() throws IOException
     {
         final File data = File.createTempFile("corruptionDetection", "data");
@@ -101,9 +101,11 @@ public class ChecksummedRandomAccessReaderTest
         final byte[] expected = new byte[5 * 1024];
         Arrays.fill(expected, (byte) 0);
 
-        SequentialWriter writer = ChecksummedSequentialWriter.open(data, crc);
-        writer.write(expected);
-        writer.finish();
+        try (SequentialWriter writer = new ChecksummedSequentialWriter(data, crc, null, SequentialWriterOption.DEFAULT))
+        {
+            writer.write(expected);
+            writer.finish();
+        }
 
         assert data.exists();
 
@@ -114,14 +116,14 @@ public class ChecksummedRandomAccessReaderTest
             dataFile.write((byte) 5);
         }
 
-        RandomAccessReader reader = new ChecksummedRandomAccessReader.Builder(data, crc).build();
-        byte[] b = new byte[expected.length];
-        reader.readFully(b);
+        try (RandomAccessReader reader = ChecksummedRandomAccessReader.open(data, crc))
+        {
+            byte[] b = new byte[expected.length];
+            reader.readFully(b);
 
-        assertArrayEquals(expected, b);
+            assertArrayEquals(expected, b);
 
-        assertTrue(reader.isEOF());
-
-        reader.close();
+            assertTrue(reader.isEOF());
+        }
     }
 }

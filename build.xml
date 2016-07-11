@@ -25,7 +25,7 @@
     <property name="debuglevel" value="source,lines,vars"/>
 
     <!-- default version and SCM information -->
-    <property name="base.version" value="3.8"/>
+    <property name="base.version" value="3.10"/>
     <property name="scm.connection" value="scm:git://git.apache.org/cassandra.git"/>
     <property name="scm.developerConnection" value="scm:git://git.apache.org/cassandra.git"/>
     <property name="scm.url" value="http://git-wip-us.apache.org/repos/asf?p=cassandra.git;a=tree"/>
@@ -67,6 +67,8 @@
     <property name="test.microbench.src" value="${test.dir}/microbench"/>
     <property name="dist.dir" value="${build.dir}/dist"/>
     <property name="tmp.dir" value="${java.io.tmpdir}"/>
+
+    <property name="doc.dir" value="${basedir}/doc"/>
 	
     <property name="source.version" value="1.8"/>
     <property name="target.version" value="1.8"/>
@@ -187,6 +189,7 @@
         <mkdir dir="${build.classes.thrift}"/>
         <mkdir dir="${test.lib}"/>
         <mkdir dir="${test.classes}"/>
+        <mkdir dir="${stress.test.classes}"/>
         <mkdir dir="${build.src.gen-java}"/>
         <mkdir dir="${build.dir.lib}"/>
         <mkdir dir="${jacoco.export.dir}"/>
@@ -247,6 +250,17 @@
                 <include name="doc/cql3/*.textile"/>
             </fileset>
         </wikitext-to-html>
+    </target>
+
+    <target name="gen-doc" depends="maven-ant-tasks-init" description="Generate documentation">
+        <exec executable="make" osfamily="unix" dir="${doc.dir}">
+            <arg value="html"/>
+        </exec>
+        <exec executable="cmd" osfamily="dos" dir="${doc.dir}">
+            <arg value="/c"/>
+            <arg value="make.bat"/>
+            <arg value="html"/>
+        </exec>
     </target>
 
     <!--
@@ -375,6 +389,7 @@
 	
           <dependency groupId="com.thinkaurelius.thrift" artifactId="thrift-server" version="0.3.7">
             <exclusion groupId="org.slf4j" artifactId="slf4j-log4j12"/>
+            <exclusion groupId="junit" artifactId="junit"/>
           </dependency>
           <dependency groupId="org.yaml" artifactId="snakeyaml" version="1.11"/>
           <dependency groupId="org.apache.thrift" artifactId="libthrift" version="0.9.2">
@@ -816,12 +831,29 @@
 
     <!-- Stress build file -->
     <property name="stress.build.src" value="${basedir}/tools/stress/src" />
+    <property name="stress.test.src" value="${basedir}/tools/stress/test/unit" />
     <property name="stress.build.classes" value="${build.classes}/stress" />
+    <property name="stress.test.classes" value="${build.dir}/test/stress-classes" />
 	<property name="stress.manifest" value="${stress.build.classes}/MANIFEST.MF" />
     <path id="cassandra.classes">
         <pathelement location="${basedir}/build/classes/main" />
         <pathelement location="${basedir}/build/classes/thrift" />
     </path>
+
+    <target name="stress-build-test" depends="stress-build" description="Compile stress tests">
+        <javac debug="true" debuglevel="${debuglevel}" destdir="${stress.test.classes}"
+               includeantruntime="false"
+               source="${source.version}"
+               target="${target.version}"
+               encoding="utf-8">
+            <classpath>
+                <path refid="cassandra.classpath"/>
+                <pathelement location="${stress.build.classes}" />
+            </classpath>
+            <src path="${stress.test.src}"/>
+        </javac>
+    </target>
+
     <target name="stress-build" depends="build" description="build stress tool">
     	<mkdir dir="${stress.build.classes}" />
         <javac compiler="modern" debug="true" debuglevel="${debuglevel}" encoding="utf-8" destdir="${stress.build.classes}" includeantruntime="true" source="${source.version}" target="${target.version}">
@@ -838,6 +870,12 @@
         <copy todir="${stress.build.classes}">
             <fileset dir="${stress.build.src}/resources" />
         </copy>
+    </target>
+
+    <target name="stress-test" depends="stress-build-test, build-test" description="Runs stress tests">
+        <testmacro inputdir="${stress.test.src}"
+                       timeout="${test.timeout}">
+        </testmacro>
     </target>
 
 	<target name="_write-poms" depends="maven-declare-dependencies">
@@ -1008,7 +1046,7 @@
     </target>
 
     <!-- creates release tarballs -->
-    <target name="artifacts" depends="jar,javadoc"
+    <target name="artifacts" depends="jar,javadoc,gen-doc"
             description="Create Cassandra release artifacts">
       <mkdir dir="${dist.dir}"/>
       <!-- fix the control linefeed so that builds on windows works on linux -->
@@ -1028,8 +1066,14 @@
       </copy>
       <copy todir="${dist.dir}/doc">
         <fileset dir="doc">
-          <exclude name="cql3/CQL.textile"/>
+          <include name="cql3/CQL.html" />
+          <include name="cql3/CQL.css" />
+          <include name="SASI.md" />
         </fileset>
+      </copy>
+      <copy todir="${dist.dir}/doc/html">
+        <fileset dir="doc" />
+        <globmapper from="build/html/*" to="*"/>
       </copy>
       <copy todir="${dist.dir}/bin">
         <fileset dir="bin"/>
@@ -1228,8 +1272,10 @@
 	<optjvmargs/>
         <classpath>
           <pathelement path="${java.class.path}"/>
+          <pathelement location="${stress.build.classes}"/>
           <path refid="cassandra.classpath" />
           <pathelement location="${test.classes}"/>
+          <pathelement location="${stress.test.classes}"/>
           <pathelement location="${test.conf}"/>
           <fileset dir="${test.lib}">
             <include name="**/*.jar" />
@@ -1240,9 +1286,20 @@
             <filelist dir="@{inputdir}" files="@{filelist}"/>
         </batchtest>
       </junit>
-      <delete quiet="true" failonerror="false" dir="${build.test.dir}/cassandra/commitlog:@{poffset}"/>
-      <delete quiet="true" failonerror="false" dir="${build.test.dir}/cassandra/data:@{poffset}"/>
-      <delete quiet="true" failonerror="false" dir="${build.test.dir}/cassandra/saved_caches:@{poffset}"/>
+
+      <condition property="fileSep" value=";">
+        <os family="windows"/>
+      </condition>
+      <condition property="fileSep" else=":">
+        <isset property="fileSep"/>
+      </condition>
+      <fail unless="fileSep">Failed to set File Separator. This shouldn't happen.</fail>
+
+      <delete quiet="true" failonerror="false" dir="${build.test.dir}/cassandra/commitlog${fileSep}@{poffset}"/>
+      <delete quiet="true" failonerror="false" dir="${build.test.dir}/cassandra/cdc_raw${fileSep}@{poffset}"/>
+      <delete quiet="true" failonerror="false" dir="${build.test.dir}/cassandra/data${fileSep}@{poffset}"/>
+      <delete quiet="true" failonerror="false" dir="${build.test.dir}/cassandra/saved_caches${fileSep}@{poffset}"/>
+      <delete quiet="true" failonerror="false" dir="${build.test.dir}/cassandra/hints${fileSep}@{poffset}"/>
     </sequential>
   </macrodef>
 
@@ -1337,6 +1394,25 @@
     </sequential>
   </macrodef>
 
+  <macrodef name="testlist-cdc">
+    <attribute name="test.file.list" />
+    <attribute name="testlist.offset" />
+    <sequential>
+      <property name="cdc_yaml" value="${build.test.dir}/cassandra.cdc.yaml"/>
+      <testmacrohelper inputdir="${test.unit.src}" filelist="@{test.file.list}" poffset="@{testlist.offset}"
+                       exclude="**/*.java" timeout="${test.timeout}" testtag="cdc">
+        <jvmarg value="-Dlegacy-sstable-root=${test.data}/legacy-sstables"/>
+        <jvmarg value="-Dinvalid-legacy-sstable-root=${test.data}/invalid-legacy-sstables"/>
+        <jvmarg value="-Dmigration-sstable-root=${test.data}/migration-sstables"/>
+        <jvmarg value="-Dcassandra.ring_delay_ms=1000"/>
+        <jvmarg value="-Dcassandra.tolerate_sstable_size=true"/>
+        <jvmarg value="-Dcassandra.config=file:///${cdc_yaml}"/>
+        <jvmarg value="-Dcassandra.skip_sync=true" />
+        <jvmarg value="-Dcassandra.config.loader=org.apache.cassandra.OffsetAwareConfigurationLoader"/>
+      </testmacrohelper>
+    </sequential>
+  </macrodef>
+
   <!--
     Run named ant task with jacoco, such as "ant jacoco-run -Dtaskname=test"
     the target run must enable the jacoco agent if usejacoco is 'yes' -->
@@ -1377,13 +1453,26 @@
     <testparallel testdelegate="testlist-compression" />
   </target>
 
+  <target name="test-cdc" depends="build-test" description="Execute unit tests with change-data-capture enabled">
+    <property name="cdc_yaml" value="${build.test.dir}/cassandra.cdc.yaml"/>
+    <concat destfile="${cdc_yaml}">
+      <fileset file="${test.conf}/cassandra.yaml"/>
+      <fileset file="${test.conf}/cdc.yaml"/>
+    </concat>
+    <path id="all-test-classes-path">
+      <fileset dir="${test.unit.src}" includes="**/${test.name}.java" />
+    </path>
+    <property name="all-test-classes" refid="all-test-classes-path"/>
+    <testparallel testdelegate="testlist-cdc" />
+  </target>
+
   <target name="msg-ser-gen-test" depends="build-test" description="Generates message serializations">
     <testmacro inputdir="${test.unit.src}"
         timeout="${test.timeout}" filter="**/SerializationsTest.java">
       <jvmarg value="-Dcassandra.test-serialization-writes=True"/>
     </testmacro>
   </target>
-  
+
   <target name="msg-ser-test" depends="build-test" description="Tests message serializations">
       <testmacro inputdir="${test.unit.src}" timeout="${test.timeout}"
                filter="**/SerializationsTest.java"/>
@@ -1488,7 +1577,7 @@
   </target>
 
   <target name="test-all" 
-          depends="eclipse-warnings,test,long-test,test-compression,test-clientutil-jar" 
+          depends="eclipse-warnings,test,long-test,test-compression,test-clientutil-jar,stress-test"
           description="Run all tests except for those under test-burn" />
   
   <!-- Use JaCoCo ant extension without needing externally saved lib -->
@@ -1755,11 +1844,13 @@
   <classpathentry kind="src" path="src/java"/>
   <classpathentry kind="src" path="src/resources"/>
   <classpathentry kind="src" path="src/gen-java"/>
+  <classpathentry kind="src" path="conf" including="hotspot_compiler"/>
   <classpathentry kind="src" path="interface/thrift/gen-java"/>
   <classpathentry kind="src" output="build/test/classes" path="test/unit"/>
   <classpathentry kind="src" output="build/test/classes" path="test/long"/>
   <classpathentry kind="src" output="build/test/classes" path="test/resources" />
   <classpathentry kind="src" path="tools/stress/src"/>
+  <classpathentry kind="src" output="build/test/stress-classes" path="tools/stress/test/unit" />
   <classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
   <classpathentry kind="output" path="build/classes/main"/>
   <classpathentry kind="lib" path="build/classes/thrift" sourcepath="interface/thrift/gen-java/"/>

@@ -46,7 +46,10 @@ import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.sstable.format.SSTableFormat;
+import org.apache.cassandra.io.util.DiskOptimizationStrategy;
 import org.apache.cassandra.io.util.FileUtils;
+import org.apache.cassandra.io.util.SpinningDiskOptimizationStrategy;
+import org.apache.cassandra.io.util.SsdDiskOptimizationStrategy;
 import org.apache.cassandra.locator.*;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.scheduler.IRequestScheduler;
@@ -108,6 +111,8 @@ public class DatabaseDescriptor
     private static EncryptionContext encryptionContext;
     private static boolean hasLoggedConfig;
 
+    private static DiskOptimizationStrategy diskOptimizationStrategy;
+
     public static void forceStaticInitialization() {}
     static
     {
@@ -123,6 +128,15 @@ public class DatabaseDescriptor
             else
             {
                 applyConfig(loadConfig());
+            }
+            switch (conf.disk_optimization_strategy)
+            {
+                case ssd:
+                    diskOptimizationStrategy = new SsdDiskOptimizationStrategy(conf.disk_optimization_page_cross_chance);
+                    break;
+                case spinning:
+                    diskOptimizationStrategy = new SpinningDiskOptimizationStrategy();
+                    break;
             }
         }
         catch (Exception e)
@@ -531,6 +545,14 @@ public class DatabaseDescriptor
             conf.hints_directory += File.separator + "hints";
         }
 
+        if (conf.cdc_raw_directory == null)
+        {
+            conf.cdc_raw_directory = System.getProperty("cassandra.storagedir", null);
+            if (conf.cdc_raw_directory == null)
+                throw new ConfigurationException("cdc_raw_directory is missing and -Dcassandra.storagedir is not set", false);
+            conf.cdc_raw_directory += File.separator + "cdc_raw";
+        }
+
         if (conf.commitlog_total_space_in_mb == null)
         {
             int preferredSize = 8192;
@@ -556,6 +578,38 @@ public class DatabaseDescriptor
             {
                 conf.commitlog_total_space_in_mb = preferredSize;
             }
+        }
+
+        if (conf.cdc_total_space_in_mb == null)
+        {
+            int preferredSize = 4096;
+            int minSize = 0;
+            try
+            {
+                // use 1/8th of available space.  See discussion on #10013 and #10199 on the CL, taking half that for CDC
+                minSize = Ints.checkedCast((guessFileStore(conf.cdc_raw_directory).getTotalSpace() / 1048576) / 8);
+            }
+            catch (IOException e)
+            {
+                logger.debug("Error checking disk space", e);
+                throw new ConfigurationException(String.format("Unable to check disk space available to %s. Perhaps the Cassandra user does not have the necessary permissions",
+                                                               conf.cdc_raw_directory), e);
+            }
+            if (minSize < preferredSize)
+            {
+                logger.warn("Small cdc volume detected at {}; setting cdc_total_space_in_mb to {}.  You can override this in cassandra.yaml",
+                            conf.cdc_raw_directory, minSize);
+                conf.cdc_total_space_in_mb = minSize;
+            }
+            else
+            {
+                conf.cdc_total_space_in_mb = preferredSize;
+            }
+        }
+
+        if (conf.cdc_enabled == true)
+        {
+            logger.info("cdc_enabled is true. Starting casssandra node with Change-Data-Capture enabled.");
         }
 
         if (conf.saved_caches_directory == null)
@@ -946,6 +1000,13 @@ public class DatabaseDescriptor
             if (conf.saved_caches_directory == null)
                 throw new ConfigurationException("saved_caches_directory must be specified", false);
             FileUtils.createDirectory(conf.saved_caches_directory);
+
+            if (conf.cdc_enabled)
+            {
+                if (conf.cdc_raw_directory == null)
+                    throw new ConfigurationException("cdc_raw_directory must be specified", false);
+                FileUtils.createDirectory(conf.cdc_raw_directory);
+            }
         }
         catch (ConfigurationException e)
         {
@@ -1349,6 +1410,12 @@ public class DatabaseDescriptor
         return conf.commitlog_directory;
     }
 
+    @VisibleForTesting
+    public static void setCommitLogLocation(String value)
+    {
+        conf.commitlog_directory = value;
+    }
+
     public static ParameterizedClass getCommitLogCompression()
     {
         return conf.commitlog_compression;
@@ -1359,6 +1426,11 @@ public class DatabaseDescriptor
         conf.commitlog_compression = compressor;
     }
 
+   /**
+    * Maximum number of buffers in the compression pool. The default value is 3, it should not be set lower than that
+    * (one segment in compression, one written to, one in reserve); delays in compression may cause the log to use
+    * more, depending on how soon the sync policy stops all writing threads.
+    */
     public static int getCommitLogMaxCompressionBuffersInPool()
     {
         return conf.commitlog_max_compression_buffers_in_pool;
@@ -1804,31 +1876,14 @@ public class DatabaseDescriptor
         return conf.buffer_pool_use_heap_if_exhausted;
     }
 
-    public static Config.DiskOptimizationStrategy getDiskOptimizationStrategy()
+    public static DiskOptimizationStrategy getDiskOptimizationStrategy()
     {
-        return conf.disk_optimization_strategy;
-    }
-
-    @VisibleForTesting
-    public static void setDiskOptimizationStrategy(Config.DiskOptimizationStrategy strategy)
-    {
-        conf.disk_optimization_strategy = strategy;
+        return diskOptimizationStrategy;
     }
 
     public static double getDiskOptimizationEstimatePercentile()
     {
         return conf.disk_optimization_estimate_percentile;
-    }
-
-    public static double getDiskOptimizationPageCrossChance()
-    {
-        return conf.disk_optimization_page_cross_chance;
-    }
-
-    @VisibleForTesting
-    public static void setDiskOptimizationPageCrossChance(double chance)
-    {
-        conf.disk_optimization_page_cross_chance = chance;
     }
 
     public static long getTotalCommitlogSpaceInMB()
@@ -2119,6 +2174,32 @@ public class DatabaseDescriptor
     public static long getGCWarnThreshold()
     {
         return conf.gc_warn_threshold_in_ms;
+    }
+
+    public static boolean isCDCEnabled()
+    {
+        return conf.cdc_enabled;
+    }
+
+    public static String getCDCLogLocation()
+    {
+        return conf.cdc_raw_directory;
+    }
+
+    public static Integer getCDCSpaceInMB()
+    {
+        return conf.cdc_total_space_in_mb;
+    }
+
+    @VisibleForTesting
+    public static void setCDCSpaceInMB(Integer input)
+    {
+        conf.cdc_total_space_in_mb = input;
+    }
+
+    public static Integer getCDCDiskCheckInterval()
+    {
+        return conf.cdc_free_space_check_interval_ms;
     }
 
     @VisibleForTesting

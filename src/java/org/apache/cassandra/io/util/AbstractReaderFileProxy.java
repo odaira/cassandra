@@ -23,7 +23,7 @@ public abstract class AbstractReaderFileProxy implements ReaderFileProxy
     protected final ChannelProxy channel;
     protected final long fileLength;
 
-    public AbstractReaderFileProxy(ChannelProxy channel, long fileLength)
+    protected AbstractReaderFileProxy(ChannelProxy channel, long fileLength)
     {
         this.channel = channel;
         this.fileLength = fileLength >= 0 ? fileLength : channel.size();

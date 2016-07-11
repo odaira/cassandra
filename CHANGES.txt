@@ -1,4 +1,49 @@
+3.10
+ * Create a system table to expose prepared statements (CASSANDRA-8831)
+ * Reuse DataOutputBuffer from ColumnIndex (CASSANDRA-11970)
+ * Remove DatabaseDescriptor dependency from SegmentedFile (CASSANDRA-11580)
+ * Add supplied username to authentication error messages (CASSANDRA-12076)
+ * Remove pre-startup check for open JMX port (CASSANDRA-12074)
+
+
+3.9
+ * Partial revert of CASSANDRA-11971, cannot recycle buffer in SP.sendMessagesToNonlocalDC (CASSANDRA-11950)
+ * Fix hdr logging for single operation workloads (CASSANDRA-12145)
+ * Fix SASI PREFIX search in CONTAINS mode with partial terms (CASSANDRA-12073)
+ * Increase size of flushExecutor thread pool (CASSANDRA-12071)
+Merged from 3.0:
+ * Fix migration of static thrift column names with non-text comparators (CASSANDRA-12147)
+ * Fix upgrading sparse tables that are incorrectly marked as dense (CASSANDRA-11315)
+ * Fix reverse queries ignoring range tombstones (CASSANDRA-11733)
+ * Avoid potential race when rebuilding CFMetaData (CASSANDRA-12098)
+ * Avoid missing sstables when getting the canonical sstables (CASSANDRA-11996)
+ * Always select the live sstables when getting sstables in bounds (CASSANDRA-11944)
+ * Fix column ordering of results with static columns for Thrift requests in
+   a mixed 2.x/3.x cluster, also fix potential non-resolved duplication of
+   those static columns in query results (CASSANDRA-12123)
+ * Avoid digest mismatch with empty but static rows (CASSANDRA-12090)
+ * Fix EOF exception when altering column type (CASSANDRA-11820)
+Merged from 2.2:
+ * Synchronize ThriftServer::stop() (CASSANDRA-12105)
+ * Use dedicated thread for JMX notifications (CASSANDRA-12146)
+ * Improve streaming synchronization and fault tolerance (CASSANDRA-11414)
+ * MemoryUtil.getShort() should return an unsigned short also for architectures not supporting unaligned memory accesses (CASSANDRA-11973)
+Merged from 2.1:
+ * Fix filtering on clustering columns when 2i is used (CASSANDRA-11907)
+ * Avoid stalling paxos when the paxos state expires (CASSANDRA-12043)
+ * Remove finished incoming streaming connections from MessagingService (CASSANDRA-11854)
+
+
 3.8
+ * Improve details in compaction log message (CASSANDRA-12080)
+ * Allow unset values in CQLSSTableWriter (CASSANDRA-11911)
+ * Chunk cache to request compressor-compatible buffers if pool space is exhausted (CASSANDRA-11993)
+ * Remove DatabaseDescriptor dependencies from SequentialWriter (CASSANDRA-11579)
+ * Move skip_stop_words filter before stemming (CASSANDRA-12078)
+ * Support seek() in EncryptedFileSegmentInputStream (CASSANDRA-11957)
+ * SSTable tools mishandling LocalPartitioner (CASSANDRA-12002)
+ * When SEPWorker assigned work, set thread name to match pool (CASSANDRA-11966)
+ * Add cross-DC latency metrics (CASSANDRA-11596)
  * Allow terms in selection clause (CASSANDRA-10783)
  * Add bind variables to trace (CASSANDRA-11719)
  * Switch counter shards' clock to timestamps (CASSANDRA-9811)
@@ -11,15 +56,30 @@
  * Faster streaming (CASSANDRA-9766)
  * Add prepared query parameter to trace for "Execute CQL3 prepared query" session (CASSANDRA-11425)
  * Add repaired percentage metric (CASSANDRA-11503)
+ * Add Change-Data-Capture (CASSANDRA-8844)
 Merged from 3.0:
+ * cqlsh: fix error handling in rare COPY FROM failure scenario (CASSANDRA-12070)
+ * Disable autocompaction during drain (CASSANDRA-11878)
+ * Add a metrics timer to MemtablePool and use it to track time spent blocked on memory in MemtableAllocator (CASSANDRA-11327)
+ * Fix upgrading schema with super columns with non-text subcomparators (CASSANDRA-12023)
  * Add TimeWindowCompactionStrategy (CASSANDRA-9666)
 Merged from 2.2:
+ * Allow nodetool info to run with readonly JMX access (CASSANDRA-11755)
+ * Validate bloom_filter_fp_chance against lowest supported
+   value when the table is created (CASSANDRA-11920)
+ * Don't send erroneous NEW_NODE notifications on restart (CASSANDRA-11038)
  * StorageService shutdown hook should use a volatile variable (CASSANDRA-11984)
 Merged from 2.1:
+ * Don't try to get sstables for non-repairing column families (CASSANDRA-12077)
+ * Avoid marking too many sstables as repaired (CASSANDRA-11696)
+ * Prevent select statements with clustering key > 64k (CASSANDRA-11882)
+ * Fix clock skew corrupting other nodes with paxos (CASSANDRA-11991)
+ * Remove distinction between non-existing static columns and existing but null in LWTs (CASSANDRA-9842)
  * Cache local ranges when calculating repair neighbors (CASSANDRA-11934)
  * Allow LWT operation on static column with only partition keys (CASSANDRA-10532)
  * Create interval tree over canonical sstables to avoid missing sstables during streaming (CASSANDRA-11886)
  * cqlsh COPY FROM: shutdown parent cluster after forking, to avoid corrupting SSL connections (CASSANDRA-11749)
+
 
 3.7
  * Support multiple folders for user defined compaction tasks (CASSANDRA-11765)
@@ -169,6 +229,7 @@ Merged from 2.2:
  * Make deprecated repair methods backward-compatible with previous notification service (CASSANDRA-11430)
  * IncomingStreamingConnection version check message wrong (CASSANDRA-11462)
 Merged from 2.1:
+ * Support mlockall on IBM POWER arch (CASSANDRA-11576)
  * Add option to disable use of severity in DynamicEndpointSnitch (CASSANDRA-11737)
  * cqlsh COPY FROM fails for null values with non-prepared statements (CASSANDRA-11631)
  * Make cython optional in pylib/setup.py (CASSANDRA-11630)
