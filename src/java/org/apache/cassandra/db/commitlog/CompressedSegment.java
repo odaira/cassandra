@@ -20,9 +20,7 @@ package org.apache.cassandra.db.commitlog;
 import java.nio.ByteBuffer;
 
 import org.apache.cassandra.io.FSWriteError;
-import org.apache.cassandra.io.compress.BufferType;
 import org.apache.cassandra.io.compress.ICompressor;
-import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.utils.SyncUtil;
 
 /**
@@ -44,15 +42,11 @@ public class CompressedSegment extends FileDirectSegment
     /**
      * Constructs a new segment file.
      */
-    CompressedSegment(CommitLog commitLog, AbstractCommitLogSegmentManager manager, Runnable onClose)
+    CompressedSegment(CommitLog commitLog, AbstractCommitLogSegmentManager manager)
     {
-        super(commitLog, manager, onClose);
+        super(commitLog, manager);
         this.compressor = commitLog.configuration.getCompressor();
-    }
-
-    ByteBuffer allocate(int size)
-    {
-        return compressor.preferredBufferType().allocate(size);
+        manager.getBufferPool().setPreferredReusableBufferType(compressor.preferredBufferType());
     }
 
     ByteBuffer createBuffer(CommitLog commitLog)
@@ -71,14 +65,7 @@ public class CompressedSegment extends FileDirectSegment
         try
         {
             int neededBufferSize = compressor.initialCompressedBufferLength(length) + COMPRESSED_MARKER_SIZE;
-            ByteBuffer compressedBuffer = manager.getBufferPool().getThreadLocalReusableBuffer();
-            if (compressor.preferredBufferType() != BufferType.typeOf(compressedBuffer) ||
-                compressedBuffer.capacity() < neededBufferSize)
-            {
-                FileUtils.clean(compressedBuffer);
-                compressedBuffer = allocate(neededBufferSize);
-                manager.getBufferPool().setThreadLocalReusableBuffer(compressedBuffer);
-            }
+            ByteBuffer compressedBuffer = manager.getBufferPool().getThreadLocalReusableBuffer(neededBufferSize);
 
             ByteBuffer inputBuffer = buffer.duplicate();
             inputBuffer.limit(contentStart + length).position(contentStart);

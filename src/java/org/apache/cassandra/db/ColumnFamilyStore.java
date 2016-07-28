@@ -186,6 +186,9 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     private static final String SAMPLING_RESULTS_NAME = "SAMPLING_RESULTS";
     private static final CompositeType SAMPLING_RESULT;
 
+    public static final String SNAPSHOT_TRUNCATE_PREFIX = "truncated";
+    public static final String SNAPSHOT_DROP_PREFIX = "dropped";
+
     static
     {
         try
@@ -244,6 +247,8 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     public final TableMetrics metric;
     public volatile long sampleLatencyNanos;
     private final ScheduledFuture<?> latencyCalculator;
+
+    private volatile boolean compactionSpaceCheck = true;
 
     public static void shutdownPostFlushExecutor() throws InterruptedException
     {
@@ -607,6 +612,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     public static void scrubDataDirectories(CFMetaData metadata) throws StartupException
     {
         Directories directories = new Directories(metadata, initialDirectories);
+        Set<File> cleanedDirectories = new HashSet<>();
 
          // clear ephemeral snapshots that were not properly cleared last session (CASSANDRA-7357)
         clearEphemeralSnapshots(directories);
@@ -625,10 +631,15 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         for (Map.Entry<Descriptor,Set<Component>> sstableFiles : directories.sstableLister(Directories.OnTxnErr.IGNORE).list().entrySet())
         {
             Descriptor desc = sstableFiles.getKey();
+            File directory = desc.directory;
             Set<Component> components = sstableFiles.getValue();
 
-            for (File tmpFile : desc.getTemporaryFiles())
-                tmpFile.delete();
+            if (!cleanedDirectories.contains(directory))
+            {
+                cleanedDirectories.add(directory);
+                for (File tmpFile : desc.getTemporaryFiles())
+                    tmpFile.delete();
+            }
 
             File dataFile = new File(desc.filenameFor(Component.DATA));
             if (components.contains(Component.DATA) && dataFile.length() > 0)
@@ -1718,6 +1729,16 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 samplerResults.cardinality, result});
     }
 
+    public boolean isCompactionDiskSpaceCheckEnabled()
+    {
+        return compactionSpaceCheck;
+    }
+
+    public void compactionDiskSpaceCheck(boolean enable)
+    {
+        compactionSpaceCheck = enable;
+    }
+
     public void cleanupCache()
     {
         Collection<Range<Token>> ranges = StorageService.instance.getLocalRanges(keyspace.getName());
@@ -2158,7 +2179,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 data.notifyTruncated(truncatedAt);
 
                 if (DatabaseDescriptor.isAutoSnapshot())
-                    snapshot(Keyspace.getTimestampedSnapshotName(name));
+                    snapshot(Keyspace.getTimestampedSnapshotNameWithPrefix(name, SNAPSHOT_TRUNCATE_PREFIX));
 
                 discardSSTables(truncatedAt);
 

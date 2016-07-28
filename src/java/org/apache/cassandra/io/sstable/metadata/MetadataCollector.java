@@ -20,10 +20,10 @@ package org.apache.cassandra.io.sstable.metadata;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 
-import com.google.common.collect.Maps;
 import com.google.common.collect.Ordering;
 
 import com.clearspring.analytics.stream.cardinality.HyperLogLogPlus;
@@ -295,7 +295,7 @@ public class MetadataCollector implements PartitionStatisticsCollector
 
     public Map<MetadataType, MetadataComponent> finalizeMetadata(String partitioner, double bloomFilterFPChance, long repairedAt, SerializationHeader header)
     {
-        Map<MetadataType, MetadataComponent> components = Maps.newHashMap();
+        Map<MetadataType, MetadataComponent> components = new EnumMap<>(MetadataType.class);
         components.put(MetadataType.VALIDATION, new ValidationMetadata(partitioner, bloomFilterFPChance));
         components.put(MetadataType.STATS, new StatsMetadata(estimatedPartitionSize,
                                                              estimatedCellPerPartitionCount,

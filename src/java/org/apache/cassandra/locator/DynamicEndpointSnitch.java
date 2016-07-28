@@ -31,6 +31,10 @@ import javax.management.ObjectName;
 
 import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.gms.ApplicationState;
+import org.apache.cassandra.gms.EndpointState;
+import org.apache.cassandra.gms.Gossiper;
+import org.apache.cassandra.gms.VersionedValue;
 import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.FBUtilities;
@@ -283,7 +287,7 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
             // finally, add the severity without any weighting, since hosts scale this relative to their own load and the size of the task causing the severity.
             // "Severity" is basically a measure of compaction activity (CASSANDRA-3722).
             if (USE_SEVERITY)
-                score += StorageService.instance.getSeverity(entry.getKey());
+                score += getSeverity(entry.getKey());
             // lowest score (least amount of badness) wins.
             newScores.put(entry.getKey(), score);
         }
@@ -333,12 +337,25 @@ public class DynamicEndpointSnitch extends AbstractEndpointSnitch implements ILa
 
     public void setSeverity(double severity)
     {
-        StorageService.instance.reportManualSeverity(severity);
+        Gossiper.instance.addLocalApplicationState(ApplicationState.SEVERITY, StorageService.instance.valueFactory.severity(severity));
+    }
+
+    private double getSeverity(InetAddress endpoint)
+    {
+        EndpointState state = Gossiper.instance.getEndpointStateForEndpoint(endpoint);
+        if (state == null)
+            return 0.0;
+
+        VersionedValue event = state.getApplicationState(ApplicationState.SEVERITY);
+        if (event == null)
+            return 0.0;
+
+        return Double.parseDouble(event.value);
     }
 
     public double getSeverity()
     {
-        return StorageService.instance.getSeverity(FBUtilities.getBroadcastAddress());
+        return getSeverity(FBUtilities.getBroadcastAddress());
     }
 
     public boolean isWorthMergingForRangeQuery(List<InetAddress> merged, List<InetAddress> l1, List<InetAddress> l2)

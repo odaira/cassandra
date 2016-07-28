@@ -17,8 +17,6 @@
  */
 package org.apache.cassandra.db;
 
-import static com.google.common.collect.Sets.newHashSet;
-
 import java.io.File;
 import java.io.FileFilter;
 import java.io.IOError;
@@ -547,7 +545,8 @@ public class Directories
 
         public long getAvailableSpace()
         {
-            return location.getUsableSpace();
+            long availableSpace = location.getUsableSpace() - DatabaseDescriptor.getMinFreeSpacePerDriveInBytes();
+            return availableSpace > 0 ? availableSpace : 0;
         }
 
         @Override
@@ -920,7 +919,7 @@ public class Directories
         if (!input.isDirectory())
             return 0;
 
-        SSTableSizeSummer visitor = new SSTableSizeSummer(sstableLister(Directories.OnTxnErr.THROW).listFiles());
+        SSTableSizeSummer visitor = new SSTableSizeSummer(input, sstableLister(Directories.OnTxnErr.THROW).listFiles());
         try
         {
             Files.walkFileTree(input.toPath(), visitor);
@@ -1006,21 +1005,22 @@ public class Directories
     
     private class SSTableSizeSummer extends DirectorySizeCalculator
     {
-        SSTableSizeSummer(List<File> files)
+        private final HashSet<File> toSkip;
+        SSTableSizeSummer(File path, List<File> files)
         {
-            super(files);
+            super(path);
+            toSkip = new HashSet<>(files);
         }
 
         @Override
-        public boolean isAcceptable(Path file)
+        public boolean isAcceptable(Path path)
         {
-            String fileName = file.toFile().getName();
-            Pair<Descriptor, Component> pair = SSTable.tryComponentFromFilename(file.getParent().toFile(), fileName);
+            File file = path.toFile();
+            Pair<Descriptor, Component> pair = SSTable.tryComponentFromFilename(path.getParent().toFile(), file.getName());
             return pair != null
                     && pair.left.ksname.equals(metadata.ksName)
                     && pair.left.cfname.equals(metadata.cfName)
-                    && !visited.contains(fileName)
-                    && !alive.contains(fileName);
+                    && !toSkip.contains(file);
         }
     }
 }

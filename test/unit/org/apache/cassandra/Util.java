@@ -57,7 +57,6 @@ import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.CounterId;
 import org.apache.cassandra.utils.FBUtilities;
-import org.apache.cassandra.utils.concurrent.OpOrder;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -531,7 +530,7 @@ public class Util
     public static void spinAssertEquals(Object expected, Supplier<Object> s, int timeoutInSeconds)
     {
         long now = System.currentTimeMillis();
-        while (System.currentTimeMillis() - now < now + (1000 * timeoutInSeconds))
+        while (System.currentTimeMillis() < now + (1000 * timeoutInSeconds))
         {
             if (s.get().equals(expected))
                 break;

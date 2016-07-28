@@ -27,10 +27,8 @@ import com.google.common.collect.ImmutableMap;
 import org.apache.cassandra.concurrent.Stage;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.monitoring.ConstructionTime;
-import org.apache.cassandra.db.monitoring.MonitorableImpl;
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.io.util.DataInputPlus;
-import org.apache.cassandra.io.util.FileUtils;
 
 public class MessageIn<T>
 {
@@ -75,7 +73,7 @@ public class MessageIn<T>
     {
         InetAddress from = CompactEndpointSerializationHelper.deserialize(in);
 
-        MessagingService.Verb verb = MessagingService.Verb.values()[in.readInt()];
+        MessagingService.Verb verb = MessagingService.verbValues[in.readInt()];
         int parameterCount = in.readInt();
         Map<String, byte[]> parameters;
         if (parameterCount == 0)

@@ -21,8 +21,6 @@ import java.io.*;
 import java.nio.ByteBuffer;
 import java.util.*;
 
-import com.google.common.collect.Maps;
-
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.io.sstable.Component;
@@ -81,7 +79,7 @@ public class LegacyMetadataSerializer extends MetadataSerializer
     @Override
     public Map<MetadataType, MetadataComponent> deserialize(Descriptor descriptor, EnumSet<MetadataType> types) throws IOException
     {
-        Map<MetadataType, MetadataComponent> components = Maps.newHashMap();
+        Map<MetadataType, MetadataComponent> components = new EnumMap<>(MetadataType.class);
 
         File statsFile = new File(descriptor.filenameFor(Component.STATS));
         if (!statsFile.exists() && types.contains(MetadataType.STATS))

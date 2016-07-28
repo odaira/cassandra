@@ -399,6 +399,11 @@ public class DatabaseDescriptor
         }
         paritionerName = partitioner.getClass().getCanonicalName();
 
+        if (config.gc_log_threshold_in_ms < 0)
+        {
+            throw new ConfigurationException("gc_log_threshold_in_ms must be a positive integer");
+        }
+
         if (conf.gc_warn_threshold_in_ms < 0)
         {
             throw new ConfigurationException("gc_warn_threshold_in_ms must be a positive integer");
@@ -1291,6 +1296,7 @@ public class DatabaseDescriptor
             case READ:
                 return getReadRpcTimeout();
             case RANGE_SLICE:
+            case PAGED_RANGE:
                 return getRangeRpcTimeout();
             case TRUNCATE:
                 return getTruncateRpcTimeout();
@@ -1375,6 +1381,11 @@ public class DatabaseDescriptor
 
     public static int getCompactionLargePartitionWarningThreshold() { return conf.compaction_large_partition_warning_threshold_mb * 1024 * 1024; }
 
+    public static long getMinFreeSpacePerDriveInBytes()
+    {
+        return conf.min_free_space_per_drive_in_mb * 1024L * 1024L;
+    }
+
     public static boolean getDisableSTCSInL0()
     {
         return Boolean.getBoolean("cassandra.disable_stcs_in_l0");
@@ -1434,6 +1445,11 @@ public class DatabaseDescriptor
     public static int getCommitLogMaxCompressionBuffersInPool()
     {
         return conf.commitlog_max_compression_buffers_in_pool;
+    }
+
+    public static void setCommitLogMaxCompressionBuffersPerPool(int buffers)
+    {
+        conf.commitlog_max_compression_buffers_in_pool = buffers;
     }
 
     public static int getMaxMutationSize()
@@ -2166,6 +2182,11 @@ public class DatabaseDescriptor
         conf.user_function_timeout_policy = userFunctionTimeoutPolicy;
     }
 
+    public static long getGCLogThreshold()
+    {
+        return conf.gc_log_threshold_in_ms;
+    }
+
     public static EncryptionContext getEncryptionContext()
     {
         return encryptionContext;
@@ -2210,6 +2231,6 @@ public class DatabaseDescriptor
 
     public static int searchConcurrencyFactor()
     {
-        return Integer.valueOf(System.getProperty("cassandra.search_concurrency_factor", "1"));
+        return Integer.parseInt(System.getProperty("cassandra.search_concurrency_factor", "1"));
     }
 }

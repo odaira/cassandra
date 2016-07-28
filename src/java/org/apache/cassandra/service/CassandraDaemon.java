@@ -138,7 +138,6 @@ public class CassandraDaemon
             jmxServer = JMXServerUtils.createJMXServer(Integer.parseInt(jmxPort), localOnly);
             if (jmxServer == null)
                 return;
-            jmxServer.start();
         }
         catch (IOException e)
         {
@@ -388,6 +387,7 @@ public class CassandraDaemon
             {
                 keyspace.viewManager.buildAllViews();
             }
+            logger.debug("Completed submission of build tasks for any materialized views defined at startup");
         };
 
         ScheduledExecutors.optionalTasks.schedule(viewRebuild, StorageService.RING_DELAY, TimeUnit.MILLISECONDS);

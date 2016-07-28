@@ -189,8 +189,6 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     private final List<IEndpointLifecycleSubscriber> lifecycleSubscribers = new CopyOnWriteArrayList<>();
 
-    private static final BackgroundActivityMonitor bgMonitor = new BackgroundActivityMonitor();
-
     private final ObjectName jmxObjectName;
 
     private Collection<Token> bootstrapTokens = null;
@@ -1468,24 +1466,6 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     }
 
     /**
-     * Increment about the known Compaction severity of the events in this node
-     */
-    public void reportSeverity(double incr)
-    {
-        bgMonitor.incrCompactionSeverity(incr);
-    }
-
-    public void reportManualSeverity(double incr)
-    {
-        bgMonitor.incrManualSeverity(incr);
-    }
-
-    public double getSeverity(InetAddress endpoint)
-    {
-        return bgMonitor.getSeverity(endpoint);
-    }
-
-    /**
      * for a keyspace, return the ranges and corresponding listen addresses.
      * @param keyspace
      * @return the endpoint map
@@ -1895,7 +1875,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     {
         try
         {
-            MessagingService.instance().setVersion(endpoint, Integer.valueOf(value.value));
+            MessagingService.instance().setVersion(endpoint, Integer.parseInt(value.value));
         }
         catch (NumberFormatException e)
         {

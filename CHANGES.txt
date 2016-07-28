@@ -1,40 +1,49 @@
 3.10
+ * Support filtering on non-PRIMARY KEY columns in the CREATE
+   MATERIALIZED VIEW statement's WHERE clause (CASSANDRA-10368)
+ * Unify STDOUT and SYSTEMLOG logback format (CASSANDRA-12004)
+ * COPY FROM should raise error for non-existing input files (CASSANDRA-12174)
+ * Faster write path (CASSANDRA-12269)
+ * Option to leave omitted columns in INSERT JSON unset (CASSANDRA-11424)
+ * Support json/yaml output in nodetool tpstats (CASSANDRA-12035)
+ * Expose metrics for successful/failed authentication attempts (CASSANDRA-10635)
+ * Prepend snapshot name with "truncated" or "dropped" when a snapshot
+   is taken before truncating or dropping a table (CASSANDRA-12178)
+ * Optimize RestrictionSet (CASSANDRA-12153)
+ * cqlsh does not automatically downgrade CQL version (CASSANDRA-12150)
+ * Omit (de)serialization of state variable in UDAs (CASSANDRA-9613)
  * Create a system table to expose prepared statements (CASSANDRA-8831)
  * Reuse DataOutputBuffer from ColumnIndex (CASSANDRA-11970)
  * Remove DatabaseDescriptor dependency from SegmentedFile (CASSANDRA-11580)
  * Add supplied username to authentication error messages (CASSANDRA-12076)
  * Remove pre-startup check for open JMX port (CASSANDRA-12074)
+ * Remove compaction Severity from DynamicEndpointSnitch (CASSANDRA-11738)
 
 
 3.9
- * Partial revert of CASSANDRA-11971, cannot recycle buffer in SP.sendMessagesToNonlocalDC (CASSANDRA-11950)
+ * cqlsh: Fix handling of $$-escaped strings (CASSANDRA-12189)
+ * Fix SSL JMX requiring truststore containing server cert (CASSANDRA-12109)
+Merged from 3.0:
+ * AssertionError with MVs on updating a row that isn't indexed due to a null value (CASSANDRA-12247)
+ * Disable RR and speculative retry with EACH_QUORUM reads (CASSANDRA-11980)
+ * Add option to override compaction space check (CASSANDRA-12180)
+ * Faster startup by only scanning each directory for temporary files once (CASSANDRA-12114)
+ * Respond with v1/v2 protocol header when responding to driver that attempts
+   to connect with too low of a protocol version (CASSANDRA-11464)
+ * NullPointerExpception when reading/compacting table (CASSANDRA-11988)
+ * Fix problem with undeleteable rows on upgrade to new sstable format (CASSANDRA-12144)
+Merged from 2.2:
+ * cqlsh copyutil should get host metadata by connected address (CASSANDRA-11979)
+ * Fixed cqlshlib.test.remove_test_db (CASSANDRA-12214)
+Merged from 2.1:
+ * cannot use cql since upgrading python to 2.7.11+ (CASSANDRA-11850)
+
+3.8
  * Fix hdr logging for single operation workloads (CASSANDRA-12145)
  * Fix SASI PREFIX search in CONTAINS mode with partial terms (CASSANDRA-12073)
  * Increase size of flushExecutor thread pool (CASSANDRA-12071)
-Merged from 3.0:
- * Fix migration of static thrift column names with non-text comparators (CASSANDRA-12147)
- * Fix upgrading sparse tables that are incorrectly marked as dense (CASSANDRA-11315)
- * Fix reverse queries ignoring range tombstones (CASSANDRA-11733)
- * Avoid potential race when rebuilding CFMetaData (CASSANDRA-12098)
- * Avoid missing sstables when getting the canonical sstables (CASSANDRA-11996)
- * Always select the live sstables when getting sstables in bounds (CASSANDRA-11944)
- * Fix column ordering of results with static columns for Thrift requests in
-   a mixed 2.x/3.x cluster, also fix potential non-resolved duplication of
-   those static columns in query results (CASSANDRA-12123)
- * Avoid digest mismatch with empty but static rows (CASSANDRA-12090)
- * Fix EOF exception when altering column type (CASSANDRA-11820)
-Merged from 2.2:
- * Synchronize ThriftServer::stop() (CASSANDRA-12105)
- * Use dedicated thread for JMX notifications (CASSANDRA-12146)
- * Improve streaming synchronization and fault tolerance (CASSANDRA-11414)
- * MemoryUtil.getShort() should return an unsigned short also for architectures not supporting unaligned memory accesses (CASSANDRA-11973)
-Merged from 2.1:
- * Fix filtering on clustering columns when 2i is used (CASSANDRA-11907)
- * Avoid stalling paxos when the paxos state expires (CASSANDRA-12043)
- * Remove finished incoming streaming connections from MessagingService (CASSANDRA-11854)
-
-
-3.8
+ * Partial revert of CASSANDRA-11971, cannot recycle buffer in SP.sendMessagesToNonlocalDC (CASSANDRA-11950)
+ * Upgrade netty to 4.0.39 (CASSANDRA-12032, CASSANDRA-12034)
  * Improve details in compaction log message (CASSANDRA-12080)
  * Allow unset values in CQLSSTableWriter (CASSANDRA-11911)
  * Chunk cache to request compressor-compatible buffers if pool space is exhausted (CASSANDRA-11993)
@@ -58,18 +67,38 @@ Merged from 2.1:
  * Add repaired percentage metric (CASSANDRA-11503)
  * Add Change-Data-Capture (CASSANDRA-8844)
 Merged from 3.0:
+ * Fix paging logic for deleted partitions with static columns (CASSANDRA-12107)
+ * Wait until the message is being send to decide which serializer must be used (CASSANDRA-11393)
+ * Fix migration of static thrift column names with non-text comparators (CASSANDRA-12147)
+ * Fix upgrading sparse tables that are incorrectly marked as dense (CASSANDRA-11315)
+ * Fix reverse queries ignoring range tombstones (CASSANDRA-11733)
+ * Avoid potential race when rebuilding CFMetaData (CASSANDRA-12098)
+ * Avoid missing sstables when getting the canonical sstables (CASSANDRA-11996)
+ * Always select the live sstables when getting sstables in bounds (CASSANDRA-11944)
+ * Fix column ordering of results with static columns for Thrift requests in
+   a mixed 2.x/3.x cluster, also fix potential non-resolved duplication of
+   those static columns in query results (CASSANDRA-12123)
+ * Avoid digest mismatch with empty but static rows (CASSANDRA-12090)
+ * Fix EOF exception when altering column type (CASSANDRA-11820)
  * cqlsh: fix error handling in rare COPY FROM failure scenario (CASSANDRA-12070)
  * Disable autocompaction during drain (CASSANDRA-11878)
  * Add a metrics timer to MemtablePool and use it to track time spent blocked on memory in MemtableAllocator (CASSANDRA-11327)
  * Fix upgrading schema with super columns with non-text subcomparators (CASSANDRA-12023)
  * Add TimeWindowCompactionStrategy (CASSANDRA-9666)
 Merged from 2.2:
+ * Synchronize ThriftServer::stop() (CASSANDRA-12105)
+ * Use dedicated thread for JMX notifications (CASSANDRA-12146)
+ * Improve streaming synchronization and fault tolerance (CASSANDRA-11414)
+ * MemoryUtil.getShort() should return an unsigned short also for architectures not supporting unaligned memory accesses (CASSANDRA-11973)
  * Allow nodetool info to run with readonly JMX access (CASSANDRA-11755)
  * Validate bloom_filter_fp_chance against lowest supported
    value when the table is created (CASSANDRA-11920)
  * Don't send erroneous NEW_NODE notifications on restart (CASSANDRA-11038)
  * StorageService shutdown hook should use a volatile variable (CASSANDRA-11984)
 Merged from 2.1:
+ * Fix filtering on clustering columns when 2i is used (CASSANDRA-11907)
+ * Avoid stalling paxos when the paxos state expires (CASSANDRA-12043)
+ * Remove finished incoming streaming connections from MessagingService (CASSANDRA-11854)
  * Don't try to get sstables for non-repairing column families (CASSANDRA-12077)
  * Avoid marking too many sstables as repaired (CASSANDRA-11696)
  * Prevent select statements with clustering key > 64k (CASSANDRA-11882)
@@ -141,7 +170,7 @@ Merged from 2.1:
  * Add support to rebuild from specific range (CASSANDRA-10406)
  * Optimize the overlapping lookup by calculating all the
    bounds in advance (CASSANDRA-11571)
- * Support json/yaml output in noetool tablestats (CASSANDRA-5977)
+ * Support json/yaml output in nodetool tablestats (CASSANDRA-5977)
  * (stress) Add datacenter option to -node options (CASSANDRA-11591)
  * Fix handling of empty slices (CASSANDRA-11513)
  * Make number of cores used by cqlsh COPY visible to testing code (CASSANDRA-11437)

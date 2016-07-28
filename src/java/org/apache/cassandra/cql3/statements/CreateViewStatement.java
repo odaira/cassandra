@@ -22,6 +22,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Sets;
 
 import org.apache.cassandra.auth.Permission;
 import org.apache.cassandra.config.CFMetaData;
@@ -41,7 +42,6 @@ import org.apache.cassandra.exceptions.RequestValidationException;
 import org.apache.cassandra.exceptions.UnauthorizedException;
 import org.apache.cassandra.schema.TableParams;
 import org.apache.cassandra.service.ClientState;
-import org.apache.cassandra.service.ClientWarn;
 import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.thrift.ThriftValidation;
 import org.apache.cassandra.transport.Event;
@@ -149,7 +149,7 @@ public class CreateViewStatement extends SchemaAlteringStatement
                                                             baseName.getColumnFamily()));
         }
 
-        Set<ColumnIdentifier> included = new HashSet<>();
+        Set<ColumnIdentifier> included = Sets.newHashSetWithExpectedSize(selectClause.size());
         for (RawSelector selector : selectClause)
         {
             Selectable.Raw selectable = selector.selectable;
@@ -202,14 +202,6 @@ public class CreateViewStatement extends SchemaAlteringStatement
 
         if (!prepared.boundNames.isEmpty())
             throw new InvalidRequestException("Cannot use query parameters in CREATE MATERIALIZED VIEW statements");
-
-        if (!restrictions.nonPKRestrictedColumns(false).isEmpty())
-        {
-            throw new InvalidRequestException(String.format(
-                    "Non-primary key columns cannot be restricted in the SELECT statement used for materialized view " +
-                    "creation (got restrictions on: %s)",
-                    restrictions.nonPKRestrictedColumns(false).stream().map(def -> def.name.toString()).collect(Collectors.joining(", "))));
-        }
 
         String whereClauseText = View.relationsToWhereClause(whereClause.relations);
 

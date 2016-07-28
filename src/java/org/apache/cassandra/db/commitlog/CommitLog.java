@@ -38,6 +38,7 @@ import org.apache.cassandra.exceptions.WriteTimeoutException;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.compress.ICompressor;
 import org.apache.cassandra.io.util.BufferedDataOutputStreamPlus;
+import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.io.util.DataOutputBufferFixed;
 import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.metrics.CommitLogMetrics;
@@ -116,8 +117,8 @@ public class CommitLog implements CommitLogMBean
 
     CommitLog start()
     {
-        executor.start();
         segmentManager.start();
+        executor.start();
         return this;
     }
 
@@ -129,22 +130,11 @@ public class CommitLog implements CommitLogMBean
      */
     public int recoverSegmentsOnDisk() throws IOException
     {
-        // If createReserveSegments is already flipped, the CLSM is running and recovery has already taken place.
-        if (segmentManager.createReserveSegments)
-            return 0;
-
-        FilenameFilter unmanagedFilesFilter = new FilenameFilter()
-        {
-            public boolean accept(File dir, String name)
-            {
-                // we used to try to avoid instantiating commitlog (thus creating an empty segment ready for writes)
-                // until after recover was finished.  this turns out to be fragile; it is less error-prone to go
-                // ahead and allow writes before recover, and just skip active segments when we do.
-                return CommitLogDescriptor.isValid(name) && CommitLogSegment.shouldReplay(name);
-            }
-        };
+        FilenameFilter unmanagedFilesFilter = (dir, name) -> CommitLogDescriptor.isValid(name) && CommitLogSegment.shouldReplay(name);
 
         // submit all files for this segment manager for archiving prior to recovery - CASSANDRA-6904
+        // The files may have already been archived by normal CommitLog operation. This may cause errors in this
+        // archiving pass, which we should not treat as serious. 
         for (File file : new File(segmentManager.storageDirectory).listFiles(unmanagedFilesFilter))
         {
             archiver.maybeArchive(file.getPath(), file.getName());
@@ -154,6 +144,7 @@ public class CommitLog implements CommitLogMBean
         assert archiver.archivePending.isEmpty() : "Not all commit log archive tasks were completed before restore";
         archiver.maybeRestoreArchive();
 
+        // List the files again as archiver may have added segments.
         File[] files = new File(segmentManager.storageDirectory).listFiles(unmanagedFilesFilter);
         int replayed = 0;
         if (files.length == 0)
@@ -171,7 +162,6 @@ public class CommitLog implements CommitLogMBean
                 segmentManager.handleReplayedSegment(f);
         }
 
-        segmentManager.enableReserveSegmentCreation();
         return replayed;
     }
 
@@ -231,9 +221,9 @@ public class CommitLog implements CommitLogMBean
     /**
      * Forces a disk flush on the commit log files that need it.  Blocking.
      */
-    public void sync(boolean syncAllSegments) throws IOException
+    public void sync() throws IOException
     {
-        segmentManager.sync(syncAllSegments);
+        segmentManager.sync();
     }
 
     /**
@@ -254,43 +244,56 @@ public class CommitLog implements CommitLogMBean
     {
         assert mutation != null;
 
-        int size = (int) Mutation.serializer.serializedSize(mutation, MessagingService.current_version);
-
-        int totalSize = size + ENTRY_OVERHEAD_SIZE;
-        if (totalSize > MAX_MUTATION_SIZE)
+        DataOutputBuffer dob = DataOutputBuffer.scratchBuffer.get();
+        try
         {
-            throw new IllegalArgumentException(String.format("Mutation of %s is too large for the maximum size of %s",
-                                                             FBUtilities.prettyPrintMemory(totalSize),
-                                                             FBUtilities.prettyPrintMemory(MAX_MUTATION_SIZE)));
-        }
+            Mutation.serializer.serialize(mutation, dob, MessagingService.current_version);
+            int size = dob.getLength();
 
-        Allocation alloc = segmentManager.allocate(mutation, totalSize);
+            int totalSize = size + ENTRY_OVERHEAD_SIZE;
+            if (totalSize > MAX_MUTATION_SIZE)
+            {
+                throw new IllegalArgumentException(String.format("Mutation of %s is too large for the maximum size of %s",
+                                                                 FBUtilities.prettyPrintMemory(totalSize),
+                                                                 FBUtilities.prettyPrintMemory(MAX_MUTATION_SIZE)));
+            }
 
-        CRC32 checksum = new CRC32();
-        final ByteBuffer buffer = alloc.getBuffer();
-        try (BufferedDataOutputStreamPlus dos = new DataOutputBufferFixed(buffer))
-        {
-            // checksummed length
-            dos.writeInt(size);
-            updateChecksumInt(checksum, size);
-            buffer.putInt((int) checksum.getValue());
+            Allocation alloc = segmentManager.allocate(mutation, totalSize);
 
-            // checksummed mutation
-            Mutation.serializer.serialize(mutation, dos, MessagingService.current_version);
-            updateChecksum(checksum, buffer, buffer.position() - size, size);
-            buffer.putInt((int) checksum.getValue());
+            CRC32 checksum = new CRC32();
+            final ByteBuffer buffer = alloc.getBuffer();
+            try (BufferedDataOutputStreamPlus dos = new DataOutputBufferFixed(buffer))
+            {
+                // checksummed length
+                dos.writeInt(size);
+                updateChecksumInt(checksum, size);
+                buffer.putInt((int) checksum.getValue());
+
+                // checksummed mutation
+                dos.write(dob.getData(), 0, size);
+                updateChecksum(checksum, buffer, buffer.position() - size, size);
+                buffer.putInt((int) checksum.getValue());
+            }
+            catch (IOException e)
+            {
+                throw new FSWriteError(e, alloc.getSegment().getPath());
+            }
+            finally
+            {
+                alloc.markWritten();
+            }
+
+            executor.finishWriteFor(alloc);
+            return alloc.getCommitLogPosition();
         }
         catch (IOException e)
         {
-            throw new FSWriteError(e, alloc.getSegment().getPath());
+            throw new FSWriteError(e, segmentManager.allocatingFrom().getPath());
         }
         finally
         {
-            alloc.markWritten();
+            dob.recycle();
         }
-
-        executor.finishWriteFor(alloc);
-        return alloc.getCommitLogPosition();
     }
 
     /**
@@ -315,8 +318,8 @@ public class CommitLog implements CommitLogMBean
 
             if (segment.isUnused())
             {
-                logger.trace("Commit log segment {} is unused", segment);
-                segmentManager.recycleSegment(segment);
+                logger.debug("Commit log segment {} is unused", segment);
+                segmentManager.archiveAndDiscard(segment);
             }
             else
             {
@@ -455,23 +458,7 @@ public class CommitLog implements CommitLogMBean
      */
     public int restartUnsafe() throws IOException
     {
-        segmentManager.start();
-        executor.restartUnsafe();
-        try
-        {
-            return recoverSegmentsOnDisk();
-        }
-        catch (FSWriteError e)
-        {
-            // Workaround for a class of races that keeps showing up on Windows tests.
-            // stop/start/reset path on Windows with segment deletion is very touchy/brittle
-            // and the timing keeps getting screwed up. Rather than chasing our tail further
-            // or rewriting the CLSM, just report that we didn't recover anything back up
-            // the chain. This will silence most intermittent test failures on Windows
-            // and appropriately fail tests that expected segments to be recovered that
-            // were not.
-            return 0;
-        }
+        return start().recoverSegmentsOnDisk();
     }
 
     @VisibleForTesting

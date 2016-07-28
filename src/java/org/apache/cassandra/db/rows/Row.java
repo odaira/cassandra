@@ -19,6 +19,9 @@ package org.apache.cassandra.db.rows;
 
 import java.util.*;
 import java.security.MessageDigest;
+import java.util.function.Consumer;
+
+import com.google.common.base.Predicate;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.ColumnDefinition;
@@ -200,7 +203,8 @@ public interface Row extends Unfiltered, Collection<ColumnData>
      *
      * @param purger the {@code DeletionPurger} to use to decide what can be purged.
      * @param nowInSec the current time to decide what is deleted and what isn't (in the case of expired cells).
-     * @return this row but without any deletion info purged by {@code purger}.
+     * @return this row but without any deletion info purged by {@code purger}. If the purged row is empty, returns
+     * {@code null}.
      */
     public Row purge(DeletionPurger purger, int nowInSec);
 
@@ -220,8 +224,14 @@ public interface Row extends Unfiltered, Collection<ColumnData>
     public Row markCounterLocalToBeCleared();
 
     /**
-     * returns a copy of this row where all live timestamp have been replaced by {@code newTimestamp} and every deletion timestamp
-     * by {@code newTimestamp - 1}. See {@link Commit} for why we need this.
+     * Returns a copy of this row where all live timestamp have been replaced by {@code newTimestamp} and every deletion
+     * timestamp by {@code newTimestamp - 1}.
+     *
+     * @param newTimestamp the timestamp to use for all live data in the returned row.
+     * @param a copy of this row with timestamp updated using {@code newTimestamp}. This can return {@code null} in the
+     * rare where the row only as a shadowable row deletion and the new timestamp supersedes it.
+     *
+     * @see Commit for why we need this.
      */
     public Row updateAllTimestamp(long newTimestamp);
 
@@ -242,6 +252,16 @@ public interface Row extends Unfiltered, Collection<ColumnData>
     public long unsharedHeapSizeExcludingData();
 
     public String toString(CFMetaData metadata, boolean fullDetails);
+
+    /**
+     * Apply a function to every column in a row
+     */
+    public void apply(Consumer<ColumnData> function, boolean reverse);
+
+    /**
+     * Apply a funtion to every column in a row until a stop condition is reached
+     */
+    public void apply(Consumer<ColumnData> function, Predicate<ColumnData> stopCondition, boolean reverse);
 
     /**
      * A row deletion/tombstone.

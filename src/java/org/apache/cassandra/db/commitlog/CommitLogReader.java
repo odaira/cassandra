@@ -34,7 +34,6 @@ import org.apache.cassandra.db.commitlog.CommitLogReadHandler.CommitLogReadError
 import org.apache.cassandra.db.commitlog.CommitLogReadHandler.CommitLogReadException;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.db.rows.SerializationHelper;
-import org.apache.cassandra.io.util.ChannelProxy;
 import org.apache.cassandra.io.util.DataInputBuffer;
 import org.apache.cassandra.io.util.FileDataInput;
 import org.apache.cassandra.io.util.RandomAccessReader;
@@ -190,7 +189,8 @@ public class CommitLogReader
                 ReadStatusTracker statusTracker = new ReadStatusTracker(mutationLimit, tolerateTruncation);
                 for (CommitLogSegmentReader.SyncSegment syncSegment : segmentReader)
                 {
-                    statusTracker.tolerateErrorsInSection &= syncSegment.toleratesErrorsInSection;
+                    // Only tolerate truncation if we allow in both global and segment
+                    statusTracker.tolerateErrorsInSection = tolerateTruncation & syncSegment.toleratesErrorsInSection;
 
                     // Skip segments that are completely behind the desired minPosition
                     if (desc.id == minPosition.segmentId && syncSegment.endPosition < minPosition.position)
