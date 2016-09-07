@@ -45,6 +45,7 @@ import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.cql3.functions.FunctionName;
 import org.apache.cassandra.cql3.functions.ThreadAwareSecurityManager;
 import org.apache.cassandra.cql3.statements.ParsedStatement;
@@ -94,6 +95,8 @@ public abstract class CQLTester
     public static final List<Integer> PROTOCOL_VERSIONS;
     static
     {
+        DatabaseDescriptor.daemonInitialization();
+
         // The latest versions might not be supported yet by the java driver
         ImmutableList.Builder<Integer> builder = ImmutableList.builder();
         for (int version = Server.MIN_SUPPORTED_VERSION; version <= Server.CURRENT_VERSION; version++)
@@ -148,6 +151,8 @@ public abstract class CQLTester
     {
         if (isServerPrepared)
             return;
+
+        DatabaseDescriptor.daemonInitialization();
 
         // Cleanup first
         try
@@ -377,10 +382,15 @@ public abstract class CQLTester
 
     public ColumnFamilyStore getCurrentColumnFamilyStore()
     {
+        return getCurrentColumnFamilyStore(KEYSPACE);
+    }
+
+    public ColumnFamilyStore getCurrentColumnFamilyStore(String keyspace)
+    {
         String currentTable = currentTable();
         return currentTable == null
              ? null
-             : Keyspace.open(KEYSPACE).getColumnFamilyStore(currentTable);
+             : Keyspace.open(keyspace).getColumnFamilyStore(currentTable);
     }
 
     public void flush(boolean forceFlush)
@@ -391,14 +401,19 @@ public abstract class CQLTester
 
     public void flush()
     {
-        ColumnFamilyStore store = getCurrentColumnFamilyStore();
+        flush(KEYSPACE);
+    }
+
+    public void flush(String keyspace)
+    {
+        ColumnFamilyStore store = getCurrentColumnFamilyStore(keyspace);
         if (store != null)
             store.forceBlockingFlush();
     }
 
-    public void disableCompaction()
+    public void disableCompaction(String keyspace)
     {
-        ColumnFamilyStore store = getCurrentColumnFamilyStore();
+        ColumnFamilyStore store = getCurrentColumnFamilyStore(keyspace);
         store.disableAutoCompaction();
     }
 
@@ -406,9 +421,9 @@ public abstract class CQLTester
     {
         try
         {
-            String currentTable = currentTable();
-            if (currentTable != null)
-                Keyspace.open(KEYSPACE).getColumnFamilyStore(currentTable).forceMajorCompaction();
+            ColumnFamilyStore store = getCurrentColumnFamilyStore();
+            if (store != null)
+                store.forceMajorCompaction();
         }
         catch (InterruptedException | ExecutionException e)
         {
@@ -418,9 +433,9 @@ public abstract class CQLTester
 
     public void cleanupCache()
     {
-        String currentTable = currentTable();
-        if (currentTable != null)
-            Keyspace.open(KEYSPACE).getColumnFamilyStore(currentTable).cleanupCache();
+        ColumnFamilyStore store = getCurrentColumnFamilyStore();
+        if (store != null)
+            store.cleanupCache();
     }
 
     public static FunctionName parseFunctionName(String qualifiedName)
@@ -546,8 +561,13 @@ public abstract class CQLTester
 
     protected String createTable(String query)
     {
+        return createTable(KEYSPACE, query);
+    }
+
+    protected String createTable(String keyspace, String query)
+    {
         String currentTable = createTableName();
-        String fullQuery = formatQuery(query);
+        String fullQuery = formatQuery(keyspace, query);
         logger.info(fullQuery);
         schemaChange(fullQuery);
         return currentTable;
@@ -658,7 +678,7 @@ public abstract class CQLTester
         try
         {
             ClientState state = ClientState.forInternalCalls();
-            state.setKeyspace(SystemKeyspace.NAME);
+            state.setKeyspace(SchemaConstants.SYSTEM_KEYSPACE_NAME);
             QueryState queryState = new QueryState(state);
 
             ParsedStatement.Prepared prepared = QueryProcessor.parseStatement(query, queryState);
@@ -697,10 +717,15 @@ public abstract class CQLTester
         return sessions.get(protocolVersion);
     }
 
-    private String formatQuery(String query)
+    protected String formatQuery(String query)
+    {
+        return formatQuery(KEYSPACE, query);
+    }
+
+    protected final String formatQuery(String keyspace, String query)
     {
         String currentTable = currentTable();
-        return currentTable == null ? query : String.format(query, KEYSPACE + "." + currentTable);
+        return currentTable == null ? query : String.format(query, keyspace + "." + currentTable);
     }
 
     protected ResultMessage.Prepared prepare(String query) throws Throwable
@@ -710,13 +735,16 @@ public abstract class CQLTester
 
     protected UntypedResultSet execute(String query, Object... values) throws Throwable
     {
-        query = formatQuery(query);
+        return executeFormattedQuery(formatQuery(query), values);
+    }
 
+    protected UntypedResultSet executeFormattedQuery(String query, Object... values) throws Throwable
+    {
         UntypedResultSet rs;
         if (usePrepared)
         {
-            if (logger.isDebugEnabled())
-                logger.debug("Executing: {} with values {}", query, formatAllValues(values));
+            if (logger.isTraceEnabled())
+                logger.trace("Executing: {} with values {}", query, formatAllValues(values));
             if (reusePrepared)
             {
                 rs = QueryProcessor.executeInternal(query, transformValues(values));
@@ -736,16 +764,21 @@ public abstract class CQLTester
         else
         {
             query = replaceValues(query, values);
-            if (logger.isDebugEnabled())
-                logger.debug("Executing: {}", query);
+            if (logger.isTraceEnabled())
+                logger.trace("Executing: {}", query);
             rs = QueryProcessor.executeOnceInternal(query);
         }
         if (rs != null)
         {
-            if (logger.isDebugEnabled())
-                logger.debug("Got {} rows", rs.size());
+            if (logger.isTraceEnabled())
+                logger.trace("Got {} rows", rs.size());
         }
         return rs;
+    }
+
+    protected void assertRowsNet(ResultSet result, Object[]... rows)
+    {
+        assertRowsNet(PROTOCOL_VERSIONS.get(PROTOCOL_VERSIONS.size() - 1), result, rows);
     }
 
     protected void assertRowsNet(int protocolVersion, ResultSet result, Object[]... rows)

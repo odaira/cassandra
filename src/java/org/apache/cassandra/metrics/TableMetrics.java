@@ -19,15 +19,16 @@ package org.apache.cassandra.metrics;
 
 import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 
-import com.codahale.metrics.*;
-import com.codahale.metrics.Timer;
-import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 
+import com.codahale.metrics.*;
+import com.codahale.metrics.Timer;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.Memtable;
@@ -35,7 +36,7 @@ import org.apache.cassandra.db.lifecycle.SSTableSet;
 import org.apache.cassandra.index.SecondaryIndexManager;
 import org.apache.cassandra.io.compress.CompressionMetadata;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
-import org.apache.cassandra.repair.SystemDistributedKeyspace;
+import org.apache.cassandra.io.sstable.metadata.MetadataCollector;
 import org.apache.cassandra.utils.EstimatedHistogram;
 import org.apache.cassandra.utils.TopKSampler;
 
@@ -176,7 +177,7 @@ public class TableMetrics
             for (String keyspace : Schema.instance.getNonSystemKeyspaces())
             {
                 Keyspace k = Schema.instance.getKeyspaceInstance(keyspace);
-                if (SystemDistributedKeyspace.NAME.equals(k.getName()))
+                if (SchemaConstants.DISTRIBUTED_KEYSPACE_NAME.equals(k.getName()))
                     continue;
                 if (k.getReplicationStrategy().getReplicationFactor() < 2)
                     continue;
@@ -379,8 +380,9 @@ public class TableMetrics
         {
             public Double getValue()
             {
-                return computeCompressionRatio(Iterables.concat(Iterables.transform(Keyspace.all(),
-                                                                                    p -> p.getAllSSTables(SSTableSet.CANONICAL))));
+                List<SSTableReader> sstables = new ArrayList<>();
+                Keyspace.all().forEach(ks -> sstables.addAll(ks.getAllSSTables(SSTableSet.CANONICAL)));
+                return computeCompressionRatio(sstables);
             }
         });
         percentRepaired = createTableGauge("PercentRepaired", new Gauge<Double>()
@@ -818,7 +820,7 @@ public class TableMetrics
                 dataLengthSum += compressionMetadata.dataLength;
             }
         }
-        return dataLengthSum != 0 ? compressedLengthSum / dataLengthSum : 0;
+        return dataLengthSum != 0 ? compressedLengthSum / dataLengthSum : MetadataCollector.NO_COMPRESSION_RATIO;
     }
 
     /**
@@ -862,7 +864,7 @@ public class TableMetrics
      */
     private boolean register(String name, String alias, Metric metric)
     {
-        boolean ret = allTableMetrics.putIfAbsent(name,  new HashSet<>()) == null;
+        boolean ret = allTableMetrics.putIfAbsent(name, ConcurrentHashMap.newKeySet()) == null;
         allTableMetrics.get(name).add(metric);
         all.put(name, alias);
         return ret;
@@ -950,7 +952,7 @@ public class TableMetrics
             String groupName = TableMetrics.class.getPackage().getName();
             StringBuilder mbeanName = new StringBuilder();
             mbeanName.append(groupName).append(":");
-            mbeanName.append("type=" + type);
+            mbeanName.append("type=").append(type);
             mbeanName.append(",name=").append(metricName);
             return new CassandraMetricsRegistry.MetricName(groupName, type, metricName, "all", mbeanName.toString());
         }

@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.cql3.validation.operations;
 
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.cql3.CQLTester;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
@@ -97,6 +98,76 @@ public class AlterTest extends CQLTester
 
         assertInvalid("ALTER TABLE %s ADD myCollection map<int, int>;");
     }
+
+    @Test
+    public void testDropWithTimestamp() throws Throwable
+    {
+        createTable("CREATE TABLE %s (id int, c1 int, v1 int, todrop int, PRIMARY KEY (id, c1));");
+        for (int i = 0; i < 5; i++)
+            execute("INSERT INTO %s (id, c1, v1, todrop) VALUES (?, ?, ?, ?) USING TIMESTAMP ?", 1, i, i, i, 10000L * i);
+
+        // flush is necessary since otherwise the values of `todrop` will get discarded during
+        // alter statement
+        flush(true);
+        execute("ALTER TABLE %s DROP todrop USING TIMESTAMP 20000;");
+        execute("ALTER TABLE %s ADD todrop int;");
+        execute("INSERT INTO %s (id, c1, v1, todrop) VALUES (?, ?, ?, ?) USING TIMESTAMP ?", 1, 100, 100, 100, 30000L);
+        assertRows(execute("SELECT id, c1, v1, todrop FROM %s"),
+                   row(1, 0, 0, null),
+                   row(1, 1, 1, null),
+                   row(1, 2, 2, null),
+                   row(1, 3, 3, 3),
+                   row(1, 4, 4, 4),
+                   row(1, 100, 100, 100));
+    }
+
+    @Test
+    public void testDropStaticWithTimestamp() throws Throwable
+    {
+        createTable("CREATE TABLE %s (id int, c1 int, v1 int, todrop int static, PRIMARY KEY (id, c1));");
+        for (int i = 0; i < 5; i++)
+            execute("INSERT INTO %s (id, c1, v1, todrop) VALUES (?, ?, ?, ?) USING TIMESTAMP ?", 1, i, i, i, 10000L * i);
+
+        // flush is necessary since otherwise the values of `todrop` will get discarded during
+        // alter statement
+        flush(true);
+        execute("ALTER TABLE %s DROP todrop USING TIMESTAMP 20000;");
+        execute("ALTER TABLE %s ADD todrop int static;");
+        execute("INSERT INTO %s (id, c1, v1, todrop) VALUES (?, ?, ?, ?) USING TIMESTAMP ?", 1, 100, 100, 100, 30000L);
+        // static column value with largest timestmap will be available again
+        assertRows(execute("SELECT id, c1, v1, todrop FROM %s"),
+                   row(1, 0, 0, 4),
+                   row(1, 1, 1, 4),
+                   row(1, 2, 2, 4),
+                   row(1, 3, 3, 4),
+                   row(1, 4, 4, 4),
+                   row(1, 100, 100, 4));
+    }
+
+    @Test
+    public void testDropMultipleWithTimestamp() throws Throwable
+    {
+        createTable("CREATE TABLE %s (id int, c1 int, v1 int, todrop1 int, todrop2 int, PRIMARY KEY (id, c1));");
+        for (int i = 0; i < 5; i++)
+            execute("INSERT INTO %s (id, c1, v1, todrop1, todrop2) VALUES (?, ?, ?, ?, ?) USING TIMESTAMP ?", 1, i, i, i, i, 10000L * i);
+
+        // flush is necessary since otherwise the values of `todrop1` and `todrop2` will get discarded during
+        // alter statement
+        flush(true);
+        execute("ALTER TABLE %s DROP (todrop1, todrop2) USING TIMESTAMP 20000;");
+        execute("ALTER TABLE %s ADD todrop1 int;");
+        execute("ALTER TABLE %s ADD todrop2 int;");
+
+        execute("INSERT INTO %s (id, c1, v1, todrop1, todrop2) VALUES (?, ?, ?, ?, ?) USING TIMESTAMP ?", 1, 100, 100, 100, 100, 40000L);
+        assertRows(execute("SELECT id, c1, v1, todrop1, todrop2 FROM %s"),
+                   row(1, 0, 0, null, null),
+                   row(1, 1, 1, null, null),
+                   row(1, 2, 2, null, null),
+                   row(1, 3, 3, 3, 3),
+                   row(1, 4, 4, 4, 4),
+                   row(1, 100, 100, 100, 100));
+    }
+
 
     @Test
     public void testChangeStrategyWithUnquotedAgrument() throws Throwable
@@ -213,7 +284,7 @@ public class AlterTest extends CQLTester
         createTable("CREATE TABLE %s (a text, b int, c int, primary key (a, b))");
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
-                                  SchemaKeyspace.NAME,
+                                  SchemaConstants.SCHEMA_KEYSPACE_NAME,
                                   SchemaKeyspace.TABLES),
                            KEYSPACE,
                            currentTable()),
@@ -222,7 +293,7 @@ public class AlterTest extends CQLTester
         execute("ALTER TABLE %s WITH compression = { 'class' : 'SnappyCompressor', 'chunk_length_in_kb' : 32 };");
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
-                                  SchemaKeyspace.NAME,
+                                  SchemaConstants.SCHEMA_KEYSPACE_NAME,
                                   SchemaKeyspace.TABLES),
                            KEYSPACE,
                            currentTable()),
@@ -231,7 +302,7 @@ public class AlterTest extends CQLTester
         execute("ALTER TABLE %s WITH compression = { 'sstable_compression' : 'LZ4Compressor', 'chunk_length_kb' : 64 };");
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
-                                  SchemaKeyspace.NAME,
+                                  SchemaConstants.SCHEMA_KEYSPACE_NAME,
                                   SchemaKeyspace.TABLES),
                            KEYSPACE,
                            currentTable()),
@@ -240,7 +311,7 @@ public class AlterTest extends CQLTester
         execute("ALTER TABLE %s WITH compression = { 'sstable_compression' : '', 'chunk_length_kb' : 32 };");
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
-                                  SchemaKeyspace.NAME,
+                                  SchemaConstants.SCHEMA_KEYSPACE_NAME,
                                   SchemaKeyspace.TABLES),
                            KEYSPACE,
                            currentTable()),
@@ -250,7 +321,7 @@ public class AlterTest extends CQLTester
         execute("ALTER TABLE %s WITH compression = { 'enabled' : 'false'};");
 
         assertRows(execute(format("SELECT compression FROM %s.%s WHERE keyspace_name = ? and table_name = ?;",
-                                  SchemaKeyspace.NAME,
+                                  SchemaConstants.SCHEMA_KEYSPACE_NAME,
                                   SchemaKeyspace.TABLES),
                            KEYSPACE,
                            currentTable()),

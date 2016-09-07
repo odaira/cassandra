@@ -43,6 +43,7 @@ import org.apache.cassandra.db.lifecycle.View;
 import org.apache.cassandra.dht.Bounds;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
+import org.apache.cassandra.exceptions.RequestFailureReason;
 import org.apache.cassandra.gms.ApplicationState;
 import org.apache.cassandra.gms.EndpointState;
 import org.apache.cassandra.gms.FailureDetector;
@@ -132,6 +133,7 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
                                              RepairParallelism parallelismDegree,
                                              Set<InetAddress> endpoints,
                                              long repairedAt,
+                                             boolean pullRepair,
                                              ListeningExecutorService executor,
                                              String... cfnames)
     {
@@ -141,7 +143,7 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
         if (cfnames.length == 0)
             return null;
 
-        final RepairSession session = new RepairSession(parentRepairSession, UUIDGen.getTimeUUID(), range, keyspace, parallelismDegree, endpoints, repairedAt, cfnames);
+        final RepairSession session = new RepairSession(parentRepairSession, UUIDGen.getTimeUUID(), range, keyspace, parallelismDegree, endpoints, repairedAt, pullRepair, cfnames);
 
         sessions.put(session.getId(), session);
         // register listeners
@@ -245,9 +247,10 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
 
             if (specifiedHost.size() <= 1)
             {
-                String msg = "Repair requires at least two endpoints that are neighbours before it can continue, the endpoint used for this repair is %s, " +
-                             "other available neighbours are %s but these neighbours were not part of the supplied list of hosts to use during the repair (%s).";
-                throw new IllegalArgumentException(String.format(msg, specifiedHost, neighbors, hosts));
+                String msg = "Specified hosts %s do not share range %s needed for repair. Either restrict repair ranges " +
+                             "with -st/-et options, or specify one of the neighbors that share this range with " +
+                             "this node: %s.";
+                throw new IllegalArgumentException(String.format(msg, hosts, toRepair, neighbors));
             }
 
             specifiedHost.remove(FBUtilities.getBroadcastAddress());
@@ -277,7 +280,7 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
                 return false;
             }
 
-            public void onFailure(InetAddress from)
+            public void onFailure(InetAddress from, RequestFailureReason failureReason)
             {
                 status.set(false);
                 failedNodes.add(from.getHostAddress());
@@ -389,10 +392,11 @@ public class ActiveRepairService implements IEndpointStateChangeSubscriber, IFai
      */
     public synchronized ParentRepairSession removeParentRepairSession(UUID parentSessionId)
     {
+        String snapshotName = parentSessionId.toString();
         for (ColumnFamilyStore cfs : getParentRepairSession(parentSessionId).columnFamilyStores.values())
         {
-            if (cfs.snapshotExists(parentSessionId.toString()))
-                cfs.clearSnapshot(parentSessionId.toString());
+            if (cfs.snapshotExists(snapshotName))
+                cfs.clearSnapshot(snapshotName);
         }
         return parentRepairSessions.remove(parentSessionId);
     }

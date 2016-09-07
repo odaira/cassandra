@@ -19,10 +19,12 @@ package org.apache.cassandra.triggers;
 
 import java.util.*;
 
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.db.marshal.UTF8Type;
@@ -40,6 +42,12 @@ import static org.junit.Assert.assertTrue;
 
 public class TriggerExecutorTest
 {
+    @BeforeClass
+    public static void setupDD()
+    {
+        DatabaseDescriptor.daemonInitialization();
+    }
+
     @Test
     public void sameKeySameCfColumnFamilies() throws ConfigurationException, InvalidRequestException
     {
@@ -348,14 +356,6 @@ public class TriggerExecutorTest
         {
             int cmp = m1.getKeyspaceName().compareTo(m2.getKeyspaceName());
             return cmp != 0 ? cmp : m1.key().compareTo(m2.key());
-        }
-    }
-
-    private static class CfComparator implements Comparator<Partition>
-    {
-        public int compare(Partition cf1, Partition cf2)
-        {
-            return cf1.metadata().cfName.compareTo(cf2.metadata().cfName);
         }
     }
 }

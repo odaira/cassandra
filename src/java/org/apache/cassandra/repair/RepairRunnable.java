@@ -35,6 +35,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.concurrent.JMXConfigurableThreadPoolExecutor;
 import org.apache.cassandra.concurrent.NamedThreadFactory;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.cql3.QueryOptions;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
@@ -103,7 +104,7 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
     protected void fireErrorAndComplete(String tag, int progressCount, int totalProgress, String message)
     {
         fireProgressEvent(tag, new ProgressEvent(ProgressEventType.ERROR, progressCount, totalProgress, message));
-        fireProgressEvent(tag, new ProgressEvent(ProgressEventType.COMPLETE, progressCount, totalProgress));
+        fireProgressEvent(tag, new ProgressEvent(ProgressEventType.COMPLETE, progressCount, totalProgress, String.format("Repair command #%d finished with error", cmd)));
     }
 
     protected void runMayThrow() throws Exception
@@ -113,11 +114,21 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
         final String tag = "repair:" + cmd;
 
         final AtomicInteger progress = new AtomicInteger();
-        final int totalProgress = 3 + options.getRanges().size(); // calculate neighbors, validation, prepare for repair + number of ranges to repair
+        final int totalProgress = 4 + options.getRanges().size(); // get valid column families, calculate neighbors, validation, prepare for repair + number of ranges to repair
 
         String[] columnFamilies = options.getColumnFamilies().toArray(new String[options.getColumnFamilies().size()]);
-        Iterable<ColumnFamilyStore> validColumnFamilies = storageService.getValidColumnFamilies(false, false, keyspace,
-                                                                                                columnFamilies);
+        Iterable<ColumnFamilyStore> validColumnFamilies;
+        try
+        {
+            validColumnFamilies = storageService.getValidColumnFamilies(false, false, keyspace, columnFamilies);
+            progress.incrementAndGet();
+        }
+        catch (IllegalArgumentException e)
+        {
+            logger.error("Repair failed:", e);
+            fireErrorAndComplete(tag, progress.get(), totalProgress, e.getMessage());
+            return;
+        }
 
         final long startTime = System.currentTimeMillis();
         String message = String.format("Starting repair command #%d, repairing keyspace %s with %s", cmd, keyspace,
@@ -226,6 +237,7 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
                                                               options.getParallelism(),
                                                               p.left,
                                                               repairedAt,
+                                                              options.isPullRepair(),
                                                               executor,
                                                               cfnames);
             if (session == null)
@@ -374,7 +386,7 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
                     throw new Exception("no tracestate");
 
                 String format = "select event_id, source, activity from %s.%s where session_id = ? and event_id > ? and event_id < ?;";
-                String query = String.format(format, TraceKeyspace.NAME, TraceKeyspace.EVENTS);
+                String query = String.format(format, SchemaConstants.TRACE_KEYSPACE_NAME, TraceKeyspace.EVENTS);
                 SelectStatement statement = (SelectStatement) QueryProcessor.parseStatement(query).prepare().statement;
 
                 ByteBuffer sessionIdBytes = ByteBufferUtil.bytes(sessionId);
@@ -409,7 +421,7 @@ public class RepairRunnable extends WrappedRunnable implements ProgressEventNoti
                     QueryOptions options = QueryOptions.forInternalCalls(ConsistencyLevel.ONE, Lists.newArrayList(sessionIdBytes,
                                                                                                                   tminBytes,
                                                                                                                   tmaxBytes));
-                    ResultMessage.Rows rows = statement.execute(QueryState.forInternalCalls(), options);
+                    ResultMessage.Rows rows = statement.execute(QueryState.forInternalCalls(), options, System.nanoTime());
                     UntypedResultSet result = UntypedResultSet.create(rows.result);
 
                     for (UntypedResultSet.Row r : result)

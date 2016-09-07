@@ -28,7 +28,7 @@ import org.apache.cassandra.io.sstable.format.big.BigFormat;
  */
 public interface SSTableFormat
 {
-    static boolean enableSSTableDevelopmentTestMode = Boolean.valueOf(System.getProperty("cassandra.test.sstableformatdevelopment","false"));
+    static boolean enableSSTableDevelopmentTestMode = Boolean.getBoolean("cassandra.test.sstableformatdevelopment");
 
 
     Version getLatestVersion();
@@ -50,6 +50,11 @@ public interface SSTableFormat
 
         public final SSTableFormat info;
         public final String name;
+
+        public static Type current()
+        {
+            return BIG;
+        }
 
         private Type(String name, SSTableFormat info)
         {

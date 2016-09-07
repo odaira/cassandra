@@ -33,7 +33,6 @@ import net.nicoulaj.compilecommand.annotations.DontInline;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.io.util.FileUtils;
 import org.apache.cassandra.utils.*;
 import org.apache.cassandra.utils.concurrent.WaitQueue;
 
@@ -215,7 +214,8 @@ public abstract class AbstractCommitLogSegmentManager
     @DontInline
     void advanceAllocatingFrom(CommitLogSegment old)
     {
-        while (true) {
+        while (true)
+        {
             synchronized (this)
             {
                 // do this in a critical section so we can maintain the order of segment construction when moving to allocatingFrom/activeSegments
@@ -292,7 +292,7 @@ public abstract class AbstractCommitLogSegmentManager
 
             for (CommitLogSegment segment : activeSegments)
                 for (UUID cfId : droppedCfs)
-                    segment.markClean(cfId, segment.getCurrentCommitLogPosition());
+                    segment.markClean(cfId, CommitLogPosition.NONE, segment.getCurrentCommitLogPosition());
 
             // now recycle segments that are unused, as we may not have triggered a discardCompletedSegments()
             // if the previous active segment was the only one to recycle (since an active segment isn't
@@ -378,7 +378,7 @@ public abstract class AbstractCommitLogSegmentManager
                     // even though we remove the schema entry before a final flush when dropping a CF,
                     // it's still possible for a writer to race and finish his append after the flush.
                     logger.trace("Marking clean CF {} that doesn't exist anymore", dirtyCFId);
-                    segment.markClean(dirtyCFId, segment.getCurrentCommitLogPosition());
+                    segment.markClean(dirtyCFId, CommitLogPosition.NONE, segment.getCurrentCommitLogPosition());
                 }
                 else if (!flushes.containsKey(dirtyCFId))
                 {
@@ -464,7 +464,8 @@ public abstract class AbstractCommitLogSegmentManager
     private void discardAvailableSegment()
     {
         CommitLogSegment next = null;
-        synchronized (this) {
+        synchronized (this)
+        {
             next = availableSegment;
             availableSegment = null;
         }

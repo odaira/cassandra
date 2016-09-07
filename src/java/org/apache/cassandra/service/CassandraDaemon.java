@@ -31,6 +31,14 @@ import javax.management.ObjectName;
 import javax.management.StandardMBean;
 import javax.management.remote.JMXConnectorServer;
 
+import com.addthis.metrics3.reporter.config.ReporterConfig;
+import com.codahale.metrics.Meter;
+import com.codahale.metrics.MetricRegistryListener;
+import com.codahale.metrics.SharedMetricRegistries;
+import com.codahale.metrics.jvm.BufferPoolMetricSet;
+import com.codahale.metrics.jvm.FileDescriptorRatioGauge;
+import com.codahale.metrics.jvm.GarbageCollectorMetricSet;
+import com.codahale.metrics.jvm.MemoryUsageGaugeSet;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -38,15 +46,12 @@ import com.google.common.util.concurrent.Uninterruptibles;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.addthis.metrics3.reporter.config.ReporterConfig;
-import com.codahale.metrics.Meter;
-import com.codahale.metrics.MetricRegistryListener;
-import com.codahale.metrics.SharedMetricRegistries;
 import org.apache.cassandra.batchlog.LegacyBatchlogMigrator;
 import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.cql3.functions.ThreadAwareSecurityManager;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.db.*;
@@ -77,7 +82,8 @@ public class CassandraDaemon
     public static final String MBEAN_NAME = "org.apache.cassandra.db:type=NativeAccess";
 
     private static final Logger logger;
-    static {
+    static
+    {
         // Need to register metrics before instrumented appender is created(first access to LoggerFactory).
         SharedMetricRegistries.getOrCreate("logback-metrics").addListener(new MetricRegistryListener.Base()
         {
@@ -145,7 +151,7 @@ public class CassandraDaemon
         }
     }
 
-    private static final CassandraDaemon instance = new CassandraDaemon();
+    static final CassandraDaemon instance = new CassandraDaemon();
 
     public Server thriftServer;
     private NativeTransportService nativeTransportService;
@@ -155,11 +161,13 @@ public class CassandraDaemon
     protected final StartupChecks startupChecks;
     private boolean setupCompleted;
 
-    public CassandraDaemon() {
+    public CassandraDaemon()
+    {
         this(false);
     }
 
-    public CassandraDaemon(boolean runManaged) {
+    public CassandraDaemon(boolean runManaged)
+    {
         this.runManaged = runManaged;
         this.startupChecks = new StartupChecks().withDefaultTests();
         this.setupCompleted = false;
@@ -175,7 +183,7 @@ public class CassandraDaemon
         FileUtils.setFSErrorHandler(new DefaultFSErrorHandler());
 
         // Delete any failed snapshot deletions on Windows - see CASSANDRA-9658
-        if (FBUtilities.isWindows())
+        if (FBUtilities.isWindows)
             WindowsFailedSnapshotTracker.deleteOldSnapshots();
 
         ThreadAwareSecurityManager.install();
@@ -256,7 +264,7 @@ public class CassandraDaemon
         for (String keyspaceName : Schema.instance.getKeyspaces())
         {
             // Skip system as we've already cleaned it
-            if (keyspaceName.equals(SystemKeyspace.NAME))
+            if (keyspaceName.equals(SchemaConstants.SYSTEM_KEYSPACE_NAME))
                 continue;
 
             for (CFMetaData cfm : Schema.instance.getTablesAndViews(keyspaceName))
@@ -354,10 +362,19 @@ public class CassandraDaemon
             logger.info("Trying to load metrics-reporter-config from file: {}", metricsReporterConfigFile);
             try
             {
+                // enable metrics provided by metrics-jvm.jar
+                CassandraMetricsRegistry.Metrics.register("jvm.buffers.", new BufferPoolMetricSet(ManagementFactory.getPlatformMBeanServer()));
+                CassandraMetricsRegistry.Metrics.register("jvm.gc.", new GarbageCollectorMetricSet());
+                CassandraMetricsRegistry.Metrics.register("jvm.memory.", new MemoryUsageGaugeSet());
+                CassandraMetricsRegistry.Metrics.register("jvm.fd.usage", new FileDescriptorRatioGauge());
+                // initialize metrics-reporter-config from yaml file
                 URL resource = CassandraDaemon.class.getClassLoader().getResource(metricsReporterConfigFile);
-                if (resource == null) {
+                if (resource == null)
+                {
                     logger.warn("Failed to load metrics-reporter-config, file does not exist: {}", metricsReporterConfigFile);
-                } else {
+                }
+                else
+                {
                     String reportFileLocation = resource.getFile();
                     ReporterConfig.loadFromFile(reportFileLocation).enableAll(CassandraMetricsRegistry.Metrics);
                 }
@@ -526,10 +543,10 @@ public class CassandraDaemon
         if (nativeTransportService != null)
             nativeTransportService.destroy();
         StorageService.instance.setRpcReady(false);
-        
+
         // On windows, we need to stop the entire system as prunsrv doesn't have the jsvc hooks
         // We rely on the shutdown hook to drain the node
-        if (FBUtilities.isWindows())
+        if (FBUtilities.isWindows)
             System.exit(0);
 
         if (jmxServer != null)
@@ -561,14 +578,7 @@ public class CassandraDaemon
         // Do not put any references to DatabaseDescriptor above the forceStaticInitialization call.
         try
         {
-            try
-            {
-                DatabaseDescriptor.forceStaticInitialization();
-            }
-            catch (ExceptionInInitializerError e)
-            {
-                throw e.getCause();
-            }
+            applyConfig();
 
             try
             {
@@ -581,7 +591,7 @@ public class CassandraDaemon
                 //Allow the server to start even if the bean can't be registered
             }
 
-            if (FBUtilities.isWindows())
+            if (FBUtilities.isWindows)
             {
                 // We need to adjust the system timer on windows from the default 15ms down to the minimum of 1ms as this
                 // impacts timer intervals, thread scheduling, driver interrupts, etc.
@@ -629,6 +639,11 @@ public class CassandraDaemon
                 exitOrFail(3, "Exception encountered during startup: " + e.getMessage());
             }
         }
+    }
+
+    public void applyConfig()
+    {
+        DatabaseDescriptor.daemonInitialization();
     }
 
     public void startNativeTransport()

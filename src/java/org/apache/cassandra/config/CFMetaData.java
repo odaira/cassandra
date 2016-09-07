@@ -392,9 +392,9 @@ public final class CFMetaData
                               partitioner);
     }
 
-    private static List<AbstractType<?>> extractTypes(List<ColumnDefinition> clusteringColumns)
+    public static List<AbstractType<?>> extractTypes(Iterable<ColumnDefinition> clusteringColumns)
     {
-        List<AbstractType<?>> types = new ArrayList<>(clusteringColumns.size());
+        List<AbstractType<?>> types = new ArrayList<>();
         for (ColumnDefinition def : clusteringColumns)
             types.add(def.type);
         return types;
@@ -855,9 +855,10 @@ public final class CFMetaData
         return columnMetadata.get(name);
     }
 
-    public static boolean isNameValid(String name) {
+    public static boolean isNameValid(String name)
+    {
         return name != null && !name.isEmpty()
-                && name.length() <= Schema.NAME_LENGTH && PATTERN_WORD_CHARS.matcher(name).matches();
+               && name.length() <= SchemaConstants.NAME_LENGTH && PATTERN_WORD_CHARS.matcher(name).matches();
     }
 
     public CFMetaData validate() throws ConfigurationException
@@ -865,9 +866,9 @@ public final class CFMetaData
         rebuild();
 
         if (!isNameValid(ksName))
-            throw new ConfigurationException(String.format("Keyspace name must not be empty, more than %s characters long, or contain non-alphanumeric-underscore characters (got \"%s\")", Schema.NAME_LENGTH, ksName));
+            throw new ConfigurationException(String.format("Keyspace name must not be empty, more than %s characters long, or contain non-alphanumeric-underscore characters (got \"%s\")", SchemaConstants.NAME_LENGTH, ksName));
         if (!isNameValid(cfName))
-            throw new ConfigurationException(String.format("ColumnFamily name must not be empty, more than %s characters long, or contain non-alphanumeric-underscore characters (got \"%s\")", Schema.NAME_LENGTH, cfName));
+            throw new ConfigurationException(String.format("ColumnFamily name must not be empty, more than %s characters long, or contain non-alphanumeric-underscore characters (got \"%s\")", SchemaConstants.NAME_LENGTH, cfName));
 
         params.validate();
 
@@ -979,9 +980,12 @@ public final class CFMetaData
         return removed;
     }
 
-    public void recordColumnDrop(ColumnDefinition def)
+    /**
+     * Adds the column definition as a dropped column, recording the drop with the provided timestamp.
+     */
+    public void recordColumnDrop(ColumnDefinition def, long timeMicros)
     {
-        droppedColumns.put(def.name.bytes, new DroppedColumn(def.name.toString(), def.type, FBUtilities.timestampMicros()));
+        droppedColumns.put(def.name.bytes, new DroppedColumn(def.name.toString(), def.type, timeMicros));
     }
 
     public void renameColumn(ColumnIdentifier from, ColumnIdentifier to) throws InvalidRequestException

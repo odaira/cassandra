@@ -210,7 +210,7 @@ public abstract class Message
                 throw new IllegalArgumentException();
         }
 
-        public abstract Response execute(QueryState queryState);
+        public abstract Response execute(QueryState queryState, long queryStartNanoTime);
 
         public void setTracingRequested()
         {
@@ -322,6 +322,8 @@ public abstract class Message
             int version = connection == null ? Server.CURRENT_VERSION : connection.getVersion();
 
             EnumSet<Frame.Header.Flag> flags = EnumSet.noneOf(Frame.Header.Flag.class);
+            if (version == Server.BETA_VERSION)
+                flags.add(Frame.Header.Flag.USE_BETA);
 
             Codec<Message> codec = (Codec<Message>)message.type.codec;
             try
@@ -499,6 +501,7 @@ public abstract class Message
 
             final Response response;
             final ServerConnection connection;
+            long queryStartNanoTime = System.nanoTime();
 
             try
             {
@@ -510,7 +513,7 @@ public abstract class Message
                 QueryState qstate = connection.validateNewMessage(request.type, connection.getVersion(), request.getStreamId());
 
                 logger.trace("Received: {}, v={}", request, connection.getVersion());
-                response = request.execute(qstate);
+                response = request.execute(qstate, queryStartNanoTime);
                 response.setStreamId(request.getStreamId());
                 response.setWarnings(ClientWarn.instance.getWarnings());
                 response.attach(connection);
@@ -558,8 +561,10 @@ public abstract class Message
                 // On protocol exception, close the channel as soon as the message have been sent
                 if (cause instanceof ProtocolException)
                 {
-                    future.addListener(new ChannelFutureListener() {
-                        public void operationComplete(ChannelFuture future) {
+                    future.addListener(new ChannelFutureListener()
+                    {
+                        public void operationComplete(ChannelFuture future)
+                        {
                             ctx.close();
                         }
                     });

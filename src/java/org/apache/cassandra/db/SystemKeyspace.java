@@ -30,20 +30,24 @@ import javax.management.openmbean.OpenDataException;
 import javax.management.openmbean.TabularData;
 
 import com.google.common.collect.HashMultimap;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.SetMultimap;
+import com.google.common.collect.Sets;
 import com.google.common.io.ByteStreams;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.cql3.UntypedResultSet;
 import org.apache.cassandra.cql3.functions.*;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.compaction.CompactionHistoryTabularData;
 import org.apache.cassandra.db.marshal.*;
+import org.apache.cassandra.db.rows.Rows;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.dht.*;
 import org.apache.cassandra.exceptions.ConfigurationException;
@@ -82,8 +86,6 @@ public final class SystemKeyspace
     // Cassandra was not previously installed and we're in the process of starting a fresh node.
     public static final CassandraVersion NULL_VERSION = new CassandraVersion("0.0.0-absent");
 
-    public static final String NAME = "system";
-
     public static final String BATCHES = "batches";
     public static final String PAXOS = "paxos";
     public static final String BUILT_INDEXES = "IndexInfo";
@@ -95,6 +97,7 @@ public final class SystemKeyspace
     public static final String SSTABLE_ACTIVITY = "sstable_activity";
     public static final String SIZE_ESTIMATES = "size_estimates";
     public static final String AVAILABLE_RANGES = "available_ranges";
+    public static final String TRANSFERRED_RANGES = "transferred_ranges";
     public static final String VIEWS_BUILDS_IN_PROGRESS = "views_builds_in_progress";
     public static final String BUILT_VIEWS = "built_views";
     public static final String PREPARED_STATEMENTS = "prepared_statements";
@@ -246,6 +249,16 @@ public final class SystemKeyspace
                 + "keyspace_name text,"
                 + "ranges set<blob>,"
                 + "PRIMARY KEY ((keyspace_name)))");
+
+    private static final CFMetaData TransferredRanges =
+        compile(TRANSFERRED_RANGES,
+                "record of transferred ranges for streaming operation",
+                "CREATE TABLE %s ("
+                + "operation text,"
+                + "peer inet,"
+                + "keyspace_name text,"
+                + "ranges set<blob>,"
+                + "PRIMARY KEY ((operation, keyspace_name), peer))");
 
     private static final CFMetaData ViewsBuildsInProgress =
         compile(VIEWS_BUILDS_IN_PROGRESS,
@@ -419,13 +432,13 @@ public final class SystemKeyspace
 
     private static CFMetaData compile(String name, String description, String schema)
     {
-        return CFMetaData.compile(String.format(schema, name), NAME)
+        return CFMetaData.compile(String.format(schema, name), SchemaConstants.SYSTEM_KEYSPACE_NAME)
                          .comment(description);
     }
 
     public static KeyspaceMetadata metadata()
     {
-        return KeyspaceMetadata.create(NAME, KeyspaceParams.local(), tables(), Views.none(), Types.none(), functions());
+        return KeyspaceMetadata.create(SchemaConstants.SYSTEM_KEYSPACE_NAME, KeyspaceParams.local(), tables(), Views.none(), Types.none(), functions());
     }
 
     private static Tables tables()
@@ -441,6 +454,7 @@ public final class SystemKeyspace
                          SSTableActivity,
                          SizeEstimates,
                          AvailableRanges,
+                         TransferredRanges,
                          ViewsBuildsInProgress,
                          BuiltViews,
                          LegacyHints,
@@ -543,14 +557,14 @@ public final class SystemKeyspace
     public static boolean isViewBuilt(String keyspaceName, String viewName)
     {
         String req = "SELECT view_name FROM %s.\"%s\" WHERE keyspace_name=? AND view_name=?";
-        UntypedResultSet result = executeInternal(String.format(req, NAME, BUILT_VIEWS), keyspaceName, viewName);
+        UntypedResultSet result = executeInternal(String.format(req, SchemaConstants.SYSTEM_KEYSPACE_NAME, BUILT_VIEWS), keyspaceName, viewName);
         return !result.isEmpty();
     }
 
     public static boolean isViewStatusReplicated(String keyspaceName, String viewName)
     {
         String req = "SELECT status_replicated FROM %s.\"%s\" WHERE keyspace_name=? AND view_name=?";
-        UntypedResultSet result = executeInternal(String.format(req, NAME, BUILT_VIEWS), keyspaceName, viewName);
+        UntypedResultSet result = executeInternal(String.format(req, SchemaConstants.SYSTEM_KEYSPACE_NAME, BUILT_VIEWS), keyspaceName, viewName);
 
         if (result.isEmpty())
             return false;
@@ -561,18 +575,18 @@ public final class SystemKeyspace
     public static void setViewBuilt(String keyspaceName, String viewName, boolean replicated)
     {
         String req = "INSERT INTO %s.\"%s\" (keyspace_name, view_name, status_replicated) VALUES (?, ?, ?)";
-        executeInternal(String.format(req, NAME, BUILT_VIEWS), keyspaceName, viewName, replicated);
+        executeInternal(String.format(req, SchemaConstants.SYSTEM_KEYSPACE_NAME, BUILT_VIEWS), keyspaceName, viewName, replicated);
         forceBlockingFlush(BUILT_VIEWS);
     }
 
     public static void setViewRemoved(String keyspaceName, String viewName)
     {
         String buildReq = "DELETE FROM %S.%s WHERE keyspace_name = ? AND view_name = ?";
-        executeInternal(String.format(buildReq, NAME, VIEWS_BUILDS_IN_PROGRESS), keyspaceName, viewName);
+        executeInternal(String.format(buildReq, SchemaConstants.SYSTEM_KEYSPACE_NAME, VIEWS_BUILDS_IN_PROGRESS), keyspaceName, viewName);
         forceBlockingFlush(VIEWS_BUILDS_IN_PROGRESS);
 
         String builtReq = "DELETE FROM %s.\"%s\" WHERE keyspace_name = ? AND view_name = ?";
-        executeInternal(String.format(builtReq, NAME, BUILT_VIEWS), keyspaceName, viewName);
+        executeInternal(String.format(builtReq, SchemaConstants.SYSTEM_KEYSPACE_NAME, BUILT_VIEWS), keyspaceName, viewName);
         forceBlockingFlush(BUILT_VIEWS);
     }
 
@@ -651,8 +665,7 @@ public final class SystemKeyspace
 
     private static Map<UUID, ByteBuffer> truncationAsMapEntry(ColumnFamilyStore cfs, long truncatedAt, CommitLogPosition position)
     {
-        DataOutputBuffer out = null;
-        try (DataOutputBuffer ignored = out = DataOutputBuffer.scratchBuffer.get())
+        try (DataOutputBuffer out = DataOutputBuffer.scratchBuffer.get())
         {
             CommitLogPosition.serializer.serialize(position, out);
             out.writeLong(truncatedAt);
@@ -661,10 +674,6 @@ public final class SystemKeyspace
         catch (IOException e)
         {
             throw new RuntimeException(e);
-        }
-        finally
-        {
-            out.recycle();
         }
     }
 
@@ -800,7 +809,7 @@ public final class SystemKeyspace
     public static void forceBlockingFlush(String cfname)
     {
         if (!Boolean.getBoolean("cassandra.unsafesystem"))
-            FBUtilities.waitOnFuture(Keyspace.open(NAME).getColumnFamilyStore(cfname).forceFlush());
+            FBUtilities.waitOnFuture(Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(cfname).forceFlush());
     }
 
     /**
@@ -916,7 +925,7 @@ public final class SystemKeyspace
         Keyspace keyspace;
         try
         {
-            keyspace = Keyspace.open(NAME);
+            keyspace = Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME);
         }
         catch (AssertionError err)
         {
@@ -1027,21 +1036,21 @@ public final class SystemKeyspace
     public static boolean isIndexBuilt(String keyspaceName, String indexName)
     {
         String req = "SELECT index_name FROM %s.\"%s\" WHERE table_name=? AND index_name=?";
-        UntypedResultSet result = executeInternal(String.format(req, NAME, BUILT_INDEXES), keyspaceName, indexName);
+        UntypedResultSet result = executeInternal(String.format(req, SchemaConstants.SYSTEM_KEYSPACE_NAME, BUILT_INDEXES), keyspaceName, indexName);
         return !result.isEmpty();
     }
 
     public static void setIndexBuilt(String keyspaceName, String indexName)
     {
         String req = "INSERT INTO %s.\"%s\" (table_name, index_name) VALUES (?, ?)";
-        executeInternal(String.format(req, NAME, BUILT_INDEXES), keyspaceName, indexName);
+        executeInternal(String.format(req, SchemaConstants.SYSTEM_KEYSPACE_NAME, BUILT_INDEXES), keyspaceName, indexName);
         forceBlockingFlush(BUILT_INDEXES);
     }
 
     public static void setIndexRemoved(String keyspaceName, String indexName)
     {
         String req = "DELETE FROM %s.\"%s\" WHERE table_name = ? AND index_name = ?";
-        executeInternal(String.format(req, NAME, BUILT_INDEXES), keyspaceName, indexName);
+        executeInternal(String.format(req, SchemaConstants.SYSTEM_KEYSPACE_NAME, BUILT_INDEXES), keyspaceName, indexName);
         forceBlockingFlush(BUILT_INDEXES);
     }
 
@@ -1049,7 +1058,7 @@ public final class SystemKeyspace
     {
         List<String> names = new ArrayList<>(indexNames);
         String req = "SELECT index_name from %s.\"%s\" WHERE table_name=? AND index_name IN ?";
-        UntypedResultSet results = executeInternal(String.format(req, NAME, BUILT_INDEXES), keyspaceName, names);
+        UntypedResultSet results = executeInternal(String.format(req, SchemaConstants.SYSTEM_KEYSPACE_NAME, BUILT_INDEXES), keyspaceName, names);
         return StreamSupport.stream(results.spliterator(), false)
                             .map(r -> r.getString("index_name"))
                             .collect(Collectors.toList());
@@ -1117,7 +1126,7 @@ public final class SystemKeyspace
     public static PaxosState loadPaxosState(DecoratedKey key, CFMetaData metadata, int nowInSec)
     {
         String req = "SELECT * FROM system.%s WHERE row_key = ? AND cf_id = ?";
-        UntypedResultSet results = QueryProcessor.executeInternalWithNow(nowInSec, String.format(req, PAXOS), key.getKey(), metadata.cfId);
+        UntypedResultSet results = QueryProcessor.executeInternalWithNow(nowInSec, System.nanoTime(), String.format(req, PAXOS), key.getKey(), metadata.cfId);
         if (results.isEmpty())
             return new PaxosState(key, metadata);
         UntypedResultSet.Row row = results.one();
@@ -1244,11 +1253,11 @@ public final class SystemKeyspace
         {
             Range<Token> range = entry.getKey();
             Pair<Long, Long> values = entry.getValue();
-            new RowUpdateBuilder(SizeEstimates, timestamp, mutation)
-                .clustering(table, range.left.toString(), range.right.toString())
-                .add("partitions_count", values.left)
-                .add("mean_partition_size", values.right)
-                .build();
+            update.add(Rows.simpleBuilder(SizeEstimates, table, range.left.toString(), range.right.toString())
+                           .timestamp(timestamp)
+                           .add("partitions_count", values.left)
+                           .add("mean_partition_size", values.right)
+                           .build());
         }
 
         mutation.apply();
@@ -1259,7 +1268,7 @@ public final class SystemKeyspace
      */
     public static void clearSizeEstimates(String keyspace, String table)
     {
-        String cql = String.format("DELETE FROM %s.%s WHERE keyspace_name = ? AND table_name = ?", NAME, SIZE_ESTIMATES);
+        String cql = String.format("DELETE FROM %s.%s WHERE keyspace_name = ? AND table_name = ?", SchemaConstants.SYSTEM_KEYSPACE_NAME, SIZE_ESTIMATES);
         executeInternal(cql, keyspace, table);
     }
 
@@ -1292,8 +1301,41 @@ public final class SystemKeyspace
 
     public static void resetAvailableRanges()
     {
-        ColumnFamilyStore availableRanges = Keyspace.open(NAME).getColumnFamilyStore(AVAILABLE_RANGES);
+        ColumnFamilyStore availableRanges = Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(AVAILABLE_RANGES);
         availableRanges.truncateBlocking();
+    }
+
+    public static synchronized void updateTransferredRanges(String description,
+                                                         InetAddress peer,
+                                                         String keyspace,
+                                                         Collection<Range<Token>> streamedRanges)
+    {
+        String cql = "UPDATE system.%s SET ranges = ranges + ? WHERE operation = ? AND peer = ? AND keyspace_name = ?";
+        Set<ByteBuffer> rangesToUpdate = new HashSet<>(streamedRanges.size());
+        for (Range<Token> range : streamedRanges)
+        {
+            rangesToUpdate.add(rangeToBytes(range));
+        }
+        executeInternal(String.format(cql, TRANSFERRED_RANGES), rangesToUpdate, description, peer, keyspace);
+    }
+
+    public static synchronized Map<InetAddress, Set<Range<Token>>> getTransferredRanges(String description, String keyspace, IPartitioner partitioner)
+    {
+        Map<InetAddress, Set<Range<Token>>> result = new HashMap<>();
+        String query = "SELECT * FROM system.%s WHERE operation = ? AND keyspace_name = ?";
+        UntypedResultSet rs = executeInternal(String.format(query, TRANSFERRED_RANGES), description, keyspace);
+        for (UntypedResultSet.Row row : rs)
+        {
+            InetAddress peer = row.getInetAddress("peer");
+            Set<ByteBuffer> rawRanges = row.getSet("ranges", BytesType.instance);
+            Set<Range<Token>> ranges = Sets.newHashSetWithExpectedSize(rawRanges.size());
+            for (ByteBuffer rawRange : rawRanges)
+            {
+                ranges.add(byteBufferToRange(rawRange, partitioner));
+            }
+            result.put(peer, ranges);
+        }
+        return ImmutableMap.copyOf(result);
     }
 
     /**
@@ -1316,7 +1358,7 @@ public final class SystemKeyspace
             String snapshotName = Keyspace.getTimestampedSnapshotName(String.format("upgrade-%s-%s",
                                                                                     previous,
                                                                                     next));
-            Keyspace systemKs = Keyspace.open(SystemKeyspace.NAME);
+            Keyspace systemKs = Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME);
             systemKs.snapshot(snapshotName, null);
             return true;
         }
@@ -1345,7 +1387,7 @@ public final class SystemKeyspace
             // the current version is. If we couldn't read a previous version from system.local we check for
             // the existence of the legacy system.Versions table. We don't actually attempt to read a version
             // from there, but it informs us that this isn't a completely new node.
-            for (File dataDirectory : Directories.getKSChildDirectories(SystemKeyspace.NAME))
+            for (File dataDirectory : Directories.getKSChildDirectories(SchemaConstants.SYSTEM_KEYSPACE_NAME))
             {
                 if (dataDirectory.getName().equals("Versions") && dataDirectory.listFiles().length > 0)
                 {
@@ -1427,7 +1469,7 @@ public final class SystemKeyspace
     {
         executeInternal(String.format("INSERT INTO %s.%s"
                                       + " (logged_keyspace, prepared_id, query_string) VALUES (?, ?, ?)",
-                                      NAME, PREPARED_STATEMENTS),
+                                      SchemaConstants.SYSTEM_KEYSPACE_NAME, PREPARED_STATEMENTS),
                         loggedKeyspace, key.byteBuffer(), cql);
         logger.debug("stored prepared statement for logged keyspace '{}': '{}'", loggedKeyspace, cql);
     }
@@ -1436,13 +1478,13 @@ public final class SystemKeyspace
     {
         executeInternal(String.format("DELETE FROM %s.%s"
                                       + " WHERE prepared_id = ?",
-                                      NAME, PREPARED_STATEMENTS),
+                                      SchemaConstants.SYSTEM_KEYSPACE_NAME, PREPARED_STATEMENTS),
                         key.byteBuffer());
     }
 
     public static List<Pair<String, String>> loadPreparedStatements()
     {
-        String query = String.format("SELECT logged_keyspace, query_string FROM %s.%s", NAME, PREPARED_STATEMENTS);
+        String query = String.format("SELECT logged_keyspace, query_string FROM %s.%s", SchemaConstants.SYSTEM_KEYSPACE_NAME, PREPARED_STATEMENTS);
         UntypedResultSet resultSet = executeOnceInternal(query);
         List<Pair<String, String>> r = new ArrayList<>();
         for (UntypedResultSet.Row row : resultSet)

@@ -17,7 +17,14 @@
  */
 package org.apache.cassandra.index.sasi;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.Writer;
 import java.nio.ByteBuffer;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -37,6 +44,7 @@ import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.ColumnFilter;
 import org.apache.cassandra.db.filter.DataLimits;
 import org.apache.cassandra.db.filter.RowFilter;
+import org.apache.cassandra.db.lifecycle.SSTableSet;
 import org.apache.cassandra.db.marshal.*;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
 import org.apache.cassandra.db.partitions.UnfilteredPartitionIterator;
@@ -52,6 +60,8 @@ import org.apache.cassandra.index.sasi.exceptions.TimeQuotaExceededException;
 import org.apache.cassandra.index.sasi.memory.IndexMemtable;
 import org.apache.cassandra.index.sasi.plan.QueryController;
 import org.apache.cassandra.index.sasi.plan.QueryPlan;
+import org.apache.cassandra.io.sstable.SSTable;
+import org.apache.cassandra.io.sstable.format.big.BigFormat;
 import org.apache.cassandra.schema.IndexMetadata;
 import org.apache.cassandra.schema.KeyspaceMetadata;
 import org.apache.cassandra.schema.KeyspaceParams;
@@ -66,6 +76,7 @@ import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
 
+import com.google.common.collect.Sets;
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.Uninterruptibles;
 
@@ -82,7 +93,7 @@ public class SASIIndexTest
         PARTITIONER = Murmur3Partitioner.instance;
     }
 
-    private static final String KS_NAME = "sasi";
+    private static final String KS_NAME = "sasi_index_test";
     private static final String CF_NAME = "test_cf";
     private static final String CLUSTERING_CF_NAME_1 = "clustering_test_cf_1";
     private static final String CLUSTERING_CF_NAME_2 = "clustering_test_cf_2";
@@ -438,9 +449,15 @@ public class SASIIndexTest
         if (forceFlush)
             store.forceBlockingFlush();
 
-        final UntypedResultSet results = executeCQL(FTS_CF_NAME, "SELECT * FROM %s.%s WHERE artist LIKE 'lady%%'");
-        Assert.assertNotNull(results);
-        Assert.assertEquals(3, results.size());
+        CQLTester.assertRowsIgnoringOrder(executeCQL(FTS_CF_NAME, "SELECT * FROM %s.%s WHERE artist LIKE 'lady%%'"),
+                                          CQLTester.row(UUID.fromString("1a4abbcd-b5de-4c69-a578-31231e01ff09"), "Lady Gaga", "Poker Face"),
+                                          CQLTester.row(UUID.fromString("4f8dc18e-54e6-4e16-b507-c5324b61523b"), "Lady Pank", "Zamki na piasku"),
+                                          CQLTester.row(UUID.fromString("eaf294fa-bad5-49d4-8f08-35ba3636a706"), "Lady Pank", "Koncertowa"));
+
+        CQLTester.assertRowsIgnoringOrder(executeCQL(FTS_CF_NAME, "SELECT artist, title FROM %s.%s WHERE artist LIKE 'lady%%'"),
+                                          CQLTester.row("Lady Gaga", "Poker Face"),
+                                          CQLTester.row("Lady Pank", "Zamki na piasku"),
+                                          CQLTester.row("Lady Pank", "Koncertowa"));
     }
 
     @Test
@@ -654,7 +671,7 @@ public class SASIIndexTest
                 add("key21");
         }};
 
-        Assert.assertEquals(expected, convert(uniqueKeys));
+        Assert.assertEquals(Sets.newHashSet(expected), Sets.newHashSet(convert(uniqueKeys)));
 
         // now let's test a single equals condition
 
@@ -680,7 +697,7 @@ public class SASIIndexTest
                 add("key21");
         }};
 
-        Assert.assertEquals(expected, convert(uniqueKeys));
+        Assert.assertEquals(Sets.newHashSet(expected), Sets.newHashSet(convert(uniqueKeys)));
 
         // now let's test something which is smaller than a single page
         uniqueKeys = getPaged(store, 4,
@@ -694,7 +711,7 @@ public class SASIIndexTest
                 add("key07");
         }};
 
-        Assert.assertEquals(expected, convert(uniqueKeys));
+        Assert.assertEquals(Sets.newHashSet(expected), Sets.newHashSet(convert(uniqueKeys)));
 
         // the same but with the page size of 2 to test minimal pagination windows
 
@@ -702,7 +719,7 @@ public class SASIIndexTest
                               buildExpression(firstName, Operator.LIKE_CONTAINS, UTF8Type.instance.decompose("a")),
                               buildExpression(age, Operator.EQ, Int32Type.instance.decompose(36)));
 
-        Assert.assertEquals(expected, convert(uniqueKeys));
+        Assert.assertEquals(Sets.newHashSet(expected), Sets.newHashSet(convert(uniqueKeys)));
 
         // and last but not least, test age range query with pagination
         uniqueKeys = getPaged(store, 4,
@@ -726,7 +743,7 @@ public class SASIIndexTest
                 add("key21");
         }};
 
-        Assert.assertEquals(expected, convert(uniqueKeys));
+        Assert.assertEquals(Sets.newHashSet(expected), Sets.newHashSet(convert(uniqueKeys)));
 
         Set<String> rows;
 
@@ -1661,9 +1678,9 @@ public class SASIIndexTest
     {
         ColumnFamilyStore store = Keyspace.open(KS_NAME).getColumnFamilyStore(CLUSTERING_CF_NAME_1);
 
-        executeCQL(CLUSTERING_CF_NAME_1, "INSERT INTO %s.%s (name, location, age, height, score) VALUES (?, ?, ?, ?, ?)", "Pavel", "US", 27, 183, 1.0);
-        executeCQL(CLUSTERING_CF_NAME_1, "INSERT INTO %s.%s (name, location, age, height, score) VALUES (?, ?, ?, ?, ?)", "Pavel", "BY", 28, 182, 2.0);
-        executeCQL(CLUSTERING_CF_NAME_1 ,"INSERT INTO %s.%s (name, location, age, height, score) VALUES (?, ?, ?, ?, ?)", "Jordan", "US", 27, 182, 1.0);
+        executeCQL(CLUSTERING_CF_NAME_1, "INSERT INTO %s.%s (name, nickname, location, age, height, score) VALUES (?, ?, ?, ?, ?, ?)", "Pavel", "xedin", "US", 27, 183, 1.0);
+        executeCQL(CLUSTERING_CF_NAME_1, "INSERT INTO %s.%s (name, nickname, location, age, height, score) VALUES (?, ?, ?, ?, ?, ?)", "Pavel", "xedin", "BY", 28, 182, 2.0);
+        executeCQL(CLUSTERING_CF_NAME_1 ,"INSERT INTO %s.%s (name, nickname, location, age, height, score) VALUES (?, ?, ?, ?, ?, ?)", "Jordan", "jrwest", "US", 27, 182, 1.0);
 
         if (forceFlush)
             store.forceBlockingFlush();
@@ -1749,8 +1766,8 @@ public class SASIIndexTest
 
         // check restrictions on non-indexed clustering columns when preceding columns are indexed
         store = Keyspace.open(KS_NAME).getColumnFamilyStore(CLUSTERING_CF_NAME_2);
-        executeCQL(CLUSTERING_CF_NAME_2 ,"INSERT INTO %s.%s (name, location, age, height, score) VALUES (?, ?, ?, ?, ?)", "Tony", "US", 43, 184, 2.0);
-        executeCQL(CLUSTERING_CF_NAME_2 ,"INSERT INTO %s.%s (name, location, age, height, score) VALUES (?, ?, ?, ?, ?)", "Christopher", "US", 27, 180, 1.0);
+        executeCQL(CLUSTERING_CF_NAME_2 ,"INSERT INTO %s.%s (name, nickname, location, age, height, score) VALUES (?, ?, ?, ?, ?, ?)", "Tony", "tony", "US", 43, 184, 2.0);
+        executeCQL(CLUSTERING_CF_NAME_2 ,"INSERT INTO %s.%s (name, nickname, location, age, height, score) VALUES (?, ?, ?, ?, ?, ?)", "Christopher", "chis", "US", 27, 180, 1.0);
 
         if (forceFlush)
             store.forceBlockingFlush();
@@ -1857,6 +1874,45 @@ public class SASIIndexTest
         Assert.assertEquals(20160402L, row4.getLong("date"));
         Assert.assertEquals(1.04, row4.getDouble("value"));
         Assert.assertEquals(7, row4.getInt("variance"));
+    }
+
+    @Test
+    public void testTableRebuild() throws Exception
+    {
+        ColumnFamilyStore store = Keyspace.open(KS_NAME).getColumnFamilyStore(CLUSTERING_CF_NAME_1);
+
+        executeCQL(CLUSTERING_CF_NAME_1, "INSERT INTO %s.%s (name, nickname, location, age, height, score) VALUES (?, ?, ?, ?, ?, ?)", "Pavel", "xedin", "US", 27, 183, 1.0);
+        executeCQL(CLUSTERING_CF_NAME_1, "INSERT INTO %s.%s (name, location, age, height, score) VALUES (?, ?, ?, ?, ?)", "Pavel", "BY", 28, 182, 2.0);
+        executeCQL(CLUSTERING_CF_NAME_1, "INSERT INTO %s.%s (name, nickname, location, age, height, score) VALUES (?, ?, ?, ?, ?, ?)", "Jordan", "jrwest", "US", 27, 182, 1.0);
+
+        store.forceBlockingFlush();
+
+        SSTable ssTable = store.getSSTables(SSTableSet.LIVE).iterator().next();
+        Path path = FileSystems.getDefault().getPath(ssTable.getFilename().replace("-Data", "-SI_age"));
+
+        // Overwrite index file with garbage
+        Writer writer = new FileWriter(path.toFile(), false);
+        writer.write("garbage");
+        writer.close();
+        long size1 = Files.readAttributes(path, BasicFileAttributes.class).size();
+
+        // Trying to query the corrupted index file yields no results
+        Assert.assertTrue(executeCQL(CLUSTERING_CF_NAME_1, "SELECT * FROM %s.%s WHERE age = 27 AND name = 'Pavel'").isEmpty());
+
+        // Rebuld index
+        store.rebuildSecondaryIndex("age");
+
+        long size2 = Files.readAttributes(path, BasicFileAttributes.class).size();
+        // Make sure that garbage was overwriten
+        Assert.assertTrue(size2 > size1);
+
+        // Make sure that indexes work for rebuit tables
+        CQLTester.assertRows(executeCQL(CLUSTERING_CF_NAME_1, "SELECT * FROM %s.%s WHERE age = 27 AND name = 'Pavel'"),
+                             CQLTester.row("Pavel", "US", 27, "xedin", 183, 1.0));
+        CQLTester.assertRows(executeCQL(CLUSTERING_CF_NAME_1, "SELECT * FROM %s.%s WHERE age = 28"),
+                             CQLTester.row("Pavel", "BY", 28, "xedin", 182, 2.0));
+        CQLTester.assertRows(executeCQL(CLUSTERING_CF_NAME_1, "SELECT * FROM %s.%s WHERE score < 2.0 AND nickname = 'jrwest' ALLOW FILTERING"),
+                             CQLTester.row("Jordan", "US", 27, "jrwest", 182, 1.0));
     }
 
     @Test
@@ -2116,6 +2172,60 @@ public class SASIIndexTest
 
         for (String table : Arrays.asList(containsTable, prefixTable, analyzedPrefixTable))
             QueryProcessor.executeOnceInternal(String.format("TRUNCATE TABLE %s.%s", KS_NAME, table));
+    }
+
+    @Test
+    public void testConditionalsWithReversedType()
+    {
+        final String TABLE_NAME = "reversed_clustering";
+
+        QueryProcessor.executeOnceInternal(String.format("CREATE TABLE IF NOT EXISTS %s.%s (pk text, ck int, v int, PRIMARY KEY (pk, ck)) " +
+                                                         "WITH CLUSTERING ORDER BY (ck DESC);", KS_NAME, TABLE_NAME));
+        QueryProcessor.executeOnceInternal(String.format("CREATE CUSTOM INDEX ON %s.%s (ck) USING 'org.apache.cassandra.index.sasi.SASIIndex'", KS_NAME, TABLE_NAME));
+        QueryProcessor.executeOnceInternal(String.format("CREATE CUSTOM INDEX ON %s.%s (v) USING 'org.apache.cassandra.index.sasi.SASIIndex'", KS_NAME, TABLE_NAME));
+
+        QueryProcessor.executeOnceInternal(String.format("INSERT INTO %s.%s (pk, ck, v) VALUES ('Alex', 1, 1);", KS_NAME, TABLE_NAME));
+        QueryProcessor.executeOnceInternal(String.format("INSERT INTO %s.%s (pk, ck, v) VALUES ('Alex', 2, 2);", KS_NAME, TABLE_NAME));
+        QueryProcessor.executeOnceInternal(String.format("INSERT INTO %s.%s (pk, ck, v) VALUES ('Alex', 3, 3);", KS_NAME, TABLE_NAME));
+        QueryProcessor.executeOnceInternal(String.format("INSERT INTO %s.%s (pk, ck, v) VALUES ('Tom', 1, 1);", KS_NAME, TABLE_NAME));
+        QueryProcessor.executeOnceInternal(String.format("INSERT INTO %s.%s (pk, ck, v) VALUES ('Tom', 2, 2);", KS_NAME, TABLE_NAME));
+        QueryProcessor.executeOnceInternal(String.format("INSERT INTO %s.%s (pk, ck, v) VALUES ('Tom', 3, 3);", KS_NAME, TABLE_NAME));
+
+        UntypedResultSet resultSet = QueryProcessor.executeOnceInternal(String.format("SELECT * FROM %s.%s WHERE ck <= 2;", KS_NAME, TABLE_NAME));
+
+        CQLTester.assertRowsIgnoringOrder(resultSet,
+                                          CQLTester.row("Alex", 1, 1),
+                                          CQLTester.row("Alex", 2, 2),
+                                          CQLTester.row("Tom", 1, 1),
+                                          CQLTester.row("Tom", 2, 2));
+
+        resultSet = QueryProcessor.executeOnceInternal(String.format("SELECT * FROM %s.%s WHERE ck <= 2 AND v > 1 ALLOW FILTERING;", KS_NAME, TABLE_NAME));
+
+        CQLTester.assertRowsIgnoringOrder(resultSet,
+                                          CQLTester.row("Alex", 2, 2),
+                                          CQLTester.row("Tom", 2, 2));
+
+        resultSet = QueryProcessor.executeOnceInternal(String.format("SELECT * FROM %s.%s WHERE ck < 2;", KS_NAME, TABLE_NAME));
+        CQLTester.assertRowsIgnoringOrder(resultSet,
+                                          CQLTester.row("Alex", 1, 1),
+                                          CQLTester.row("Tom", 1, 1));
+
+        resultSet = QueryProcessor.executeOnceInternal(String.format("SELECT * FROM %s.%s WHERE ck >= 2;", KS_NAME, TABLE_NAME));
+        CQLTester.assertRowsIgnoringOrder(resultSet,
+                                          CQLTester.row("Alex", 2, 2),
+                                          CQLTester.row("Alex", 3, 3),
+                                          CQLTester.row("Tom", 2, 2),
+                                          CQLTester.row("Tom", 3, 3));
+
+        resultSet = QueryProcessor.executeOnceInternal(String.format("SELECT * FROM %s.%s WHERE ck >= 2 AND v < 3 ALLOW FILTERING;", KS_NAME, TABLE_NAME));
+        CQLTester.assertRowsIgnoringOrder(resultSet,
+                                          CQLTester.row("Alex", 2, 2),
+                                          CQLTester.row("Tom", 2, 2));
+
+        resultSet = QueryProcessor.executeOnceInternal(String.format("SELECT * FROM %s.%s WHERE ck > 2;", KS_NAME, TABLE_NAME));
+        CQLTester.assertRowsIgnoringOrder(resultSet,
+                                          CQLTester.row("Alex", 3, 3),
+                                          CQLTester.row("Tom", 3, 3));
     }
 
     @Test

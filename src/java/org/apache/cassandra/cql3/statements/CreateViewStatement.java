@@ -86,7 +86,8 @@ public class CreateViewStatement extends SchemaAlteringStatement
         // We do validation in announceMigration to reduce doubling up of work
     }
 
-    private interface AddColumn {
+    private interface AddColumn
+    {
         void add(ColumnIdentifier identifier, AbstractType<?> type);
     }
 
@@ -187,7 +188,9 @@ public class CreateViewStatement extends SchemaAlteringStatement
 
         // build the select statement
         Map<ColumnDefinition.Raw, Boolean> orderings = Collections.emptyMap();
-        SelectStatement.Parameters parameters = new SelectStatement.Parameters(orderings, false, true, false);
+        List<ColumnDefinition.Raw> groups = Collections.emptyList();
+        SelectStatement.Parameters parameters = new SelectStatement.Parameters(orderings, groups, false, true, false);
+
         SelectStatement.RawStatement rawSelect = new SelectStatement.RawStatement(baseName, parameters, selectClause, whereClause, null, null);
 
         ClientState state = ClientState.forInternalCalls();

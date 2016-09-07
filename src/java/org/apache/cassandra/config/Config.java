@@ -32,9 +32,6 @@ import com.google.common.collect.Sets;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.cassandra.config.EncryptionOptions.ClientEncryptionOptions;
-import org.apache.cassandra.config.EncryptionOptions.ServerEncryptionOptions;
-
 /**
  * A class that contains configuration properties for the cassandra node it runs within.
  *
@@ -99,9 +96,17 @@ public class Config
 
     public volatile Long truncate_request_timeout_in_ms = 60000L;
 
+    /**
+     * @deprecated use {@link this#streaming_keep_alive_period_in_secs} instead
+     */
+    @Deprecated
     public Integer streaming_socket_timeout_in_ms = 86400000; //24 hours
 
+    public Integer streaming_keep_alive_period_in_secs = 300; //5 minutes
+
     public boolean cross_node_timeout = false;
+
+    public volatile long slow_query_log_timeout_in_ms = 500L;
 
     public volatile Double phi_convict_threshold = 8.0;
 
@@ -113,7 +118,7 @@ public class Config
     @Deprecated
     public Integer concurrent_replicates = null;
 
-    public Integer memtable_flush_writers = 1;
+    public Integer memtable_flush_writers = null;
     public Integer memtable_heap_space_in_mb;
     public Integer memtable_offheap_space_in_mb;
     public Float memtable_cleanup_threshold = null;
@@ -177,6 +182,10 @@ public class Config
     public volatile Integer compaction_large_partition_warning_threshold_mb = 100;
     public Integer min_free_space_per_drive_in_mb = 50;
 
+    /**
+     * @deprecated retry support removed on CASSANDRA-10992
+     */
+    @Deprecated
     public Integer max_streaming_retries = 3;
 
     public volatile Integer stream_throughput_outbound_megabits_per_sec = 200;
@@ -210,18 +219,18 @@ public class Config
 
     public String endpoint_snitch;
     public Boolean dynamic_snitch = true;
-    public Integer dynamic_snitch_update_interval_in_ms = 100;
-    public Integer dynamic_snitch_reset_interval_in_ms = 600000;
-    public Double dynamic_snitch_badness_threshold = 0.1;
+    public volatile Integer dynamic_snitch_update_interval_in_ms = 100;
+    public volatile Integer dynamic_snitch_reset_interval_in_ms = 600000;
+    public volatile Double dynamic_snitch_badness_threshold = 0.1;
 
     public String request_scheduler;
     public RequestSchedulerId request_scheduler_id;
     public RequestSchedulerOptions request_scheduler_options;
 
-    public ServerEncryptionOptions server_encryption_options = new ServerEncryptionOptions();
-    public ClientEncryptionOptions client_encryption_options = new ClientEncryptionOptions();
+    public EncryptionOptions.ServerEncryptionOptions server_encryption_options = new EncryptionOptions.ServerEncryptionOptions();
+    public EncryptionOptions.ClientEncryptionOptions client_encryption_options = new EncryptionOptions.ClientEncryptionOptions();
     // this encOptions is for backward compatibility (a warning is logged by DatabaseDescriptor)
-    public ServerEncryptionOptions encryption_options;
+    public EncryptionOptions.ServerEncryptionOptions encryption_options;
 
     public InternodeCompression internode_compression = InternodeCompression.none;
 
@@ -356,11 +365,22 @@ public class Config
         outboundBindAny = value;
     }
 
+    /**
+     * @deprecated migrate to {@link DatabaseDescriptor#isClientInitialized()}
+     */
+    @Deprecated
     public static boolean isClientMode()
     {
         return isClientMode;
     }
 
+    /**
+     * Client mode means that the process is a pure client, that uses C* code base but does
+     * not read or write local C* database files.
+     *
+     * @deprecated migrate to {@link DatabaseDescriptor#clientInitialization(boolean)}
+     */
+    @Deprecated
     public static void setClientMode(boolean clientMode)
     {
         isClientMode = clientMode;

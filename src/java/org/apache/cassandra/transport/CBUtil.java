@@ -83,14 +83,17 @@ public abstract class CBUtil
         theDecoder.reset();
         CharBuffer dst = TL_CHAR_BUFFER.get();
         int capacity = (int) ((double) src.remaining() * theDecoder.maxCharsPerByte());
-        if (dst == null) {
+        if (dst == null)
+        {
             capacity = Math.max(capacity, 4096);
             dst = CharBuffer.allocate(capacity);
             TL_CHAR_BUFFER.set(dst);
         }
-        else {
+        else
+        {
             dst.clear();
-            if (dst.capacity() < capacity){
+            if (dst.capacity() < capacity)
+            {
                 dst = CharBuffer.allocate(capacity);
                 TL_CHAR_BUFFER.set(dst);
             }
@@ -393,7 +396,7 @@ public abstract class CBUtil
         int length = cb.readInt();
         if (length < 0)
         {
-            if (protocolVersion < 4) // backward compatibility for pre-version 4
+            if (protocolVersion < Server.VERSION_4) // backward compatibility for pre-version 4
                 return null;
             if (length == -1)
                 return null;
@@ -496,7 +499,7 @@ public abstract class CBUtil
 
     public static InetSocketAddress readInet(ByteBuf cb)
     {
-        int addrSize = cb.readByte();
+        int addrSize = cb.readByte() & 0xFF;
         byte[] address = new byte[addrSize];
         cb.readBytes(address);
         int port = cb.readInt();
@@ -523,6 +526,33 @@ public abstract class CBUtil
     {
         byte[] address = inet.getAddress().getAddress();
         return 1 + address.length + 4;
+    }
+
+    public static InetAddress readInetAddr(ByteBuf cb)
+    {
+        int addressSize = cb.readByte() & 0xFF;
+        byte[] address = new byte[addressSize];
+        cb.readBytes(address);
+        try
+        {
+            return InetAddress.getByAddress(address);
+        }
+        catch (UnknownHostException e)
+        {
+            throw new ProtocolException("Invalid IP address while deserializing inet address");
+        }
+    }
+
+    public static void writeInetAddr(InetAddress inetAddr, ByteBuf cb)
+    {
+        byte[] address = inetAddr.getAddress();
+        cb.writeByte(address.length);
+        cb.writeBytes(address);
+    }
+
+    public static int sizeOfInetAddr(InetAddress inetAddr)
+    {
+        return 1 + inetAddr.getAddress().length;
     }
 
     /*

@@ -24,9 +24,7 @@ import com.google.common.collect.Iterables;
 
 import org.apache.cassandra.auth.Permission;
 import org.apache.cassandra.config.*;
-import org.apache.cassandra.cql3.CFName;
-import org.apache.cassandra.cql3.CQL3Type;
-import org.apache.cassandra.cql3.ColumnIdentifier;
+import org.apache.cassandra.cql3.*;
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.marshal.AbstractType;
@@ -41,6 +39,7 @@ import org.apache.cassandra.schema.TableParams;
 import org.apache.cassandra.service.ClientState;
 import org.apache.cassandra.service.MigrationManager;
 import org.apache.cassandra.transport.Event;
+import org.apache.cassandra.utils.*;
 
 import static org.apache.cassandra.thrift.ThriftValidation.validateColumnFamily;
 
@@ -55,18 +54,21 @@ public class AlterTableStatement extends SchemaAlteringStatement
     private final TableAttributes attrs;
     private final Map<ColumnDefinition.Raw, ColumnDefinition.Raw> renames;
     private final List<AlterTableStatementColumn> colNameList;
+    private final Long deleteTimestamp;
 
     public AlterTableStatement(CFName name,
                                Type type,
                                List<AlterTableStatementColumn> colDataList,
                                TableAttributes attrs,
-                               Map<ColumnDefinition.Raw, ColumnDefinition.Raw> renames)
+                               Map<ColumnDefinition.Raw, ColumnDefinition.Raw> renames,
+                               Long deleteTimestamp)
     {
         super(name);
         this.oType = type;
         this.colNameList = colDataList;
         this.attrs = attrs;
         this.renames = renames;
+        this.deleteTimestamp = deleteTimestamp == null ? FBUtilities.timestampMicros() : deleteTimestamp;
     }
 
     public void checkAccess(ClientState state) throws UnauthorizedException, InvalidRequestException
@@ -91,7 +93,6 @@ public class AlterTableStatement extends SchemaAlteringStatement
         CQL3Type.Raw dataType = null;
         boolean isStatic = false;
         CQL3Type validator = null;
-        ColumnDefinition.Raw rawColumnName = null;
 
         List<ViewDefinition> viewUpdates = null;
         Iterable<ViewDefinition> views = View.findAll(keyspace(), columnFamily());
@@ -99,21 +100,18 @@ public class AlterTableStatement extends SchemaAlteringStatement
         switch (oType)
         {
             case ADD:
+                if (cfm.isDense())
+                    throw new InvalidRequestException("Cannot add new column to a COMPACT STORAGE table");
+
                 for (AlterTableStatementColumn colData : colNameList)
                 {
-                    rawColumnName = colData.getColumnName();
-                    if (rawColumnName != null)
-                    {
-                        columnName = rawColumnName.getIdentifier(cfm);
-                        def =  cfm.getColumnDefinition(columnName);
-                        dataType = colData.getColumnType();
-                        isStatic = colData.getStaticType();
-                        validator = dataType == null ? null : dataType.prepare(keyspace());
-                    }
+                    columnName = colData.getColumnName().getIdentifier(cfm);
+                    def = cfm.getColumnDefinition(columnName);
+                    dataType = colData.getColumnType();
+                    assert dataType != null;
+                    isStatic = colData.getStaticType();
+                    validator = dataType.prepare(keyspace());
 
-                    assert columnName != null;
-                    if (cfm.isDense())
-                        throw new InvalidRequestException("Cannot add new column to a COMPACT STORAGE table");
 
                     if (isStatic)
                     {
@@ -187,16 +185,12 @@ public class AlterTableStatement extends SchemaAlteringStatement
                 break;
 
             case ALTER:
-                rawColumnName = colNameList.get(0).getColumnName();
-                if (rawColumnName != null)
-                {
-                    columnName = rawColumnName.getIdentifier(cfm);
-                    def = cfm.getColumnDefinition(columnName);
-                    dataType = colNameList.get(0).getColumnType();
-                    validator = dataType == null ? null : dataType.prepare(keyspace());
-                }
+                columnName = colNameList.get(0).getColumnName().getIdentifier(cfm);
+                def = cfm.getColumnDefinition(columnName);
+                dataType = colNameList.get(0).getColumnType();
+                assert dataType != null;
+                validator = dataType.prepare(keyspace());
 
-                assert columnName != null;
                 if (def == null)
                     throw new InvalidRequestException(String.format("Column %s was not found in table %s", columnName, columnFamily()));
 
@@ -227,18 +221,14 @@ public class AlterTableStatement extends SchemaAlteringStatement
                 break;
 
             case DROP:
+                if (!cfm.isCQLTable())
+                    throw new InvalidRequestException("Cannot drop columns from a non-CQL3 table");
+
                 for (AlterTableStatementColumn colData : colNameList)
                 {
-                    columnName = null;
-                    rawColumnName = colData.getColumnName();
-                    if (rawColumnName != null)
-                    {
-                        columnName = rawColumnName.getIdentifier(cfm);
-                        def = cfm.getColumnDefinition(columnName);
-                    }
-                    assert columnName != null;
-                    if (!cfm.isCQLTable())
-                        throw new InvalidRequestException("Cannot drop columns from a non-CQL3 table");
+                    columnName = colData.getColumnName().getIdentifier(cfm);
+                    def = cfm.getColumnDefinition(columnName);
+
                     if (def == null)
                         throw new InvalidRequestException(String.format("Column %s was not found in table %s", columnName, columnFamily()));
 
@@ -253,15 +243,15 @@ public class AlterTableStatement extends SchemaAlteringStatement
                               for (ColumnDefinition columnDef : cfm.partitionColumns())
                               {
                                    if (columnDef.name.equals(columnName))
-                                      {
-                                        toDelete = columnDef;
-                                        break;
-                                      }
+                                   {
+                                       toDelete = columnDef;
+                                       break;
+                                   }
                                }
-                        assert toDelete != null;
-                        cfm.removeColumnDefinition(toDelete);
-                        cfm.recordColumnDrop(toDelete);
-                        break;
+                             assert toDelete != null;
+                             cfm.removeColumnDefinition(toDelete);
+                             cfm.recordColumnDrop(toDelete, deleteTimestamp);
+                             break;
                     }
 
                     // If the dropped column is required by any secondary indexes

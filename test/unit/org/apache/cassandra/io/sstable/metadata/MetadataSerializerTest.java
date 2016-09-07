@@ -25,6 +25,7 @@ import java.util.Collections;
 import java.util.EnumSet;
 import java.util.Map;
 
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import org.apache.cassandra.SchemaLoader;
@@ -32,6 +33,7 @@ import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.SerializationHeader;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
+import org.apache.cassandra.db.commitlog.IntervalSet;
 import org.apache.cassandra.dht.RandomPartitioner;
 import org.apache.cassandra.io.sstable.Component;
 import org.apache.cassandra.io.sstable.Descriptor;
@@ -46,6 +48,12 @@ import static org.junit.Assert.assertEquals;
 
 public class MetadataSerializerTest
 {
+    @BeforeClass
+    public static void initDD()
+    {
+        DatabaseDescriptor.daemonInitialization();
+    }
+
     @Test
     public void testSerialization() throws IOException
     {
@@ -85,8 +93,7 @@ public class MetadataSerializerTest
 
         CFMetaData cfm = SchemaLoader.standardCFMD("ks1", "cf1");
         MetadataCollector collector = new MetadataCollector(cfm.comparator)
-                                          .commitLogLowerBound(cllb)
-                                          .commitLogUpperBound(club);
+                                          .commitLogIntervals(new IntervalSet<>(cllb, club));
 
         String partitioner = RandomPartitioner.class.getCanonicalName();
         double bfFpChance = 0.1;
@@ -106,6 +113,18 @@ public class MetadataSerializerTest
         testOldReadsNew("ma", "mb");
     }
 
+    @Test
+    public void testMaReadMc() throws IOException
+    {
+        testOldReadsNew("ma", "mc");
+    }
+
+    @Test
+    public void testMbReadMc() throws IOException
+    {
+        testOldReadsNew("mb", "mc");
+    }
+
     public void testOldReadsNew(String oldV, String newV) throws IOException
     {
         Map<MetadataType, MetadataComponent> originalMetadata = constructMetadata();
@@ -115,7 +134,7 @@ public class MetadataSerializerTest
         File statsFileLb = serialize(originalMetadata, serializer, BigFormat.instance.getVersion(newV));
         File statsFileLa = serialize(originalMetadata, serializer, BigFormat.instance.getVersion(oldV));
         // Reading both as earlier version should yield identical results.
-        Descriptor desc = new Descriptor(oldV, statsFileLb.getParentFile(), "", "", 0, DatabaseDescriptor.getSSTableFormat());
+        Descriptor desc = new Descriptor(oldV, statsFileLb.getParentFile(), "", "", 0, SSTableFormat.Type.current());
         try (RandomAccessReader inLb = RandomAccessReader.open(statsFileLb);
              RandomAccessReader inLa = RandomAccessReader.open(statsFileLa))
         {

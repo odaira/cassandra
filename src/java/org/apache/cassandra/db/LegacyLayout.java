@@ -24,6 +24,7 @@ import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.util.*;
 
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.utils.AbstractIterator;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Lists;
@@ -264,6 +265,8 @@ public abstract class LegacyLayout
         // We use comparator.size() rather than clustering.size() because of static clusterings
         int clusteringSize = metadata.comparator.size();
         int size = clusteringSize + (metadata.isDense() ? 0 : 1) + (collectionElement == null ? 0 : 1);
+        if (metadata.isSuper())
+            size = clusteringSize + 1;
         ByteBuffer[] values = new ByteBuffer[size];
         for (int i = 0; i < clusteringSize; i++)
         {
@@ -282,10 +285,23 @@ public abstract class LegacyLayout
             values[i] = v;
         }
 
-        if (!metadata.isDense())
-            values[clusteringSize] = columnName;
-        if (collectionElement != null)
-            values[clusteringSize + 1] = collectionElement;
+        if (metadata.isSuper())
+        {
+            // We need to set the "column" (in thrift terms) name, i.e. the value corresponding to the subcomparator.
+            // What it is depends if this a cell for a declared "static" column or a "dynamic" column part of the
+            // super-column internal map.
+            assert columnName != null; // This should never be null for supercolumns, see decodeForSuperColumn() above
+            values[clusteringSize] = columnName.equals(CompactTables.SUPER_COLUMN_MAP_COLUMN)
+                                   ? collectionElement
+                                   : columnName;
+        }
+        else
+        {
+            if (!metadata.isDense())
+                values[clusteringSize] = columnName;
+            if (collectionElement != null)
+                values[clusteringSize + 1] = collectionElement;
+        }
 
         return CompositeType.build(isStatic, values);
     }
@@ -1010,7 +1026,7 @@ public abstract class LegacyLayout
                 // then simply ignore the cell is fine. But also not that we ignore if it's the
                 // system keyspace because for those table we actually remove columns without registering
                 // them in the dropped columns
-                assert metadata.ksName.equals(SystemKeyspace.NAME) || metadata.getDroppedColumnDefinition(e.columnName) != null : e.getMessage();
+                assert metadata.ksName.equals(SchemaConstants.SYSTEM_KEYSPACE_NAME) || metadata.getDroppedColumnDefinition(e.columnName) != null : e.getMessage();
             }
         }
     }
@@ -1090,7 +1106,7 @@ public abstract class LegacyLayout
                     // then simply ignore the cell is fine. But also not that we ignore if it's the
                     // system keyspace because for those table we actually remove columns without registering
                     // them in the dropped columns
-                    if (metadata.ksName.equals(SystemKeyspace.NAME) || metadata.getDroppedColumnDefinition(e.columnName) != null)
+                    if (metadata.ksName.equals(SchemaConstants.SYSTEM_KEYSPACE_NAME) || metadata.getDroppedColumnDefinition(e.columnName) != null)
                         return computeNext();
                     else
                         throw new IOError(e);

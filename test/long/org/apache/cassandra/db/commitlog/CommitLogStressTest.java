@@ -53,6 +53,11 @@ import org.apache.cassandra.security.EncryptionContextGenerator;
 
 public class CommitLogStressTest
 {
+    static
+    {
+        DatabaseDescriptor.daemonInitialization();
+    }
+
     public static ByteBuffer dataSource;
 
     public static int NUM_THREADS = 4 * Runtime.getRuntime().availableProcessors() - 1;
@@ -257,7 +262,8 @@ public class CommitLogStressTest
             }
             verifySizes(commitLog);
 
-            commitLog.discardCompletedSegments(Schema.instance.getCFMetaData("Keyspace1", "Standard1").cfId, discardedPos);
+            commitLog.discardCompletedSegments(Schema.instance.getCFMetaData("Keyspace1", "Standard1").cfId,
+                    CommitLogPosition.NONE, discardedPos);
             threads.clear();
 
             System.out.format("Discarded at %s\n", discardedPos);

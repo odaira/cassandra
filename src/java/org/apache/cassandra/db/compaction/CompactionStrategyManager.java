@@ -314,6 +314,9 @@ public class CompactionStrategyManager implements INotificationConsumer
 
     public void replaceFlushed(Memtable memtable, Collection<SSTableReader> sstables)
     {
+        cfs.getTracker().replaceFlushed(memtable, sstables);
+        if (sstables != null && !sstables.isEmpty())
+            CompactionManager.instance.submitBackground(cfs);
     }
 
     public int getUnleveledSSTables()
@@ -743,7 +746,6 @@ public class CompactionStrategyManager implements INotificationConsumer
     {
         maybeReload(cfs.metadata);
         List<AbstractCompactionTask> ret = new ArrayList<>();
-
         readLock.lock();
         try
         {

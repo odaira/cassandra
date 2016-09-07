@@ -166,6 +166,14 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
     protected abstract long selectionSerializedSize(int version);
 
     /**
+     * Creates a new <code>ReadCommand</code> instance with new limits.
+     *
+     * @param newLimits the new limits
+     * @return a new <code>ReadCommand</code> with the updated limits
+     */
+    public abstract ReadCommand withUpdatedLimit(DataLimits newLimits);
+
+    /**
      * The metadata for the table queried.
      *
      * @return the metadata for the table queried.
@@ -444,7 +452,7 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
             private final int failureThreshold = DatabaseDescriptor.getTombstoneFailureThreshold();
             private final int warningThreshold = DatabaseDescriptor.getTombstoneWarnThreshold();
 
-            private final boolean respectTombstoneThresholds = !Schema.isSystemKeyspace(ReadCommand.this.metadata().ksName);
+            private final boolean respectTombstoneThresholds = !SchemaConstants.isSystemKeyspace(ReadCommand.this.metadata().ksName);
 
             private int liveRows = 0;
             private int tombstones = 0;
@@ -521,7 +529,7 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
 
     protected class CheckForAbort extends StoppingTransformation<BaseRowIterator<?>>
     {
-        protected BaseRowIterator<?> applyToPartition(BaseRowIterator partition)
+        protected BaseRowIterator<?> applyToPartition(BaseRowIterator<?> partition)
         {
             if (maybeAbort())
             {
@@ -667,7 +675,7 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
             out.writeInt(command.nowInSec());
             ColumnFilter.serializer.serialize(command.columnFilter(), out, version);
             RowFilter.serializer.serialize(command.rowFilter(), out, version);
-            DataLimits.serializer.serialize(command.limits(), out, version);
+            DataLimits.serializer.serialize(command.limits(), out, version, command.metadata.comparator);
             if (command.index.isPresent())
                 IndexMetadata.serializer.serialize(command.index.get(), out, version);
 
@@ -688,7 +696,7 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
             int nowInSec = in.readInt();
             ColumnFilter columnFilter = ColumnFilter.serializer.deserialize(in, version, metadata);
             RowFilter rowFilter = RowFilter.serializer.deserialize(in, version, metadata);
-            DataLimits limits = DataLimits.serializer.deserialize(in, version);
+            DataLimits limits = DataLimits.serializer.deserialize(in, version,  metadata.comparator);
             Optional<IndexMetadata> index = hasIndex
                                             ? deserializeIndexMetadata(in, version, metadata)
                                             : Optional.empty();
@@ -724,7 +732,7 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
                  + TypeSizes.sizeof(command.nowInSec())
                  + ColumnFilter.serializer.serializedSize(command.columnFilter(), version)
                  + RowFilter.serializer.serializedSize(command.rowFilter(), version)
-                 + DataLimits.serializer.serializedSize(command.limits(), version)
+                 + DataLimits.serializer.serializedSize(command.limits(), version, command.metadata.comparator)
                  + command.selectionSerializedSize(version)
                  + command.indexSerializedSize(version);
         }
@@ -803,7 +811,7 @@ public abstract class ReadCommand extends MonitorableImpl implements ReadQuery
                     out.writeInt(LegacyReadCommandSerializer.updateLimitForQuery(rangeCommand.limits().count(), filter.requestedSlices()));
 
                 int compositesToGroup;
-                boolean selectsStatics = !rangeCommand.columnFilter().fetchedColumns().statics.isEmpty() || filter.requestedSlices().selects(Clustering.STATIC_CLUSTERING);
+                boolean selectsStatics = !rangeCommand.columnFilter().fetchedColumns().statics.isEmpty() && filter.requestedSlices().selects(Clustering.STATIC_CLUSTERING);
                 if (limits.kind() == DataLimits.Kind.THRIFT_LIMIT)
                     compositesToGroup = -1;
                 else if (limits.isDistinct() && !selectsStatics)

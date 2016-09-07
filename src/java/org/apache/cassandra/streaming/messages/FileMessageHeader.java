@@ -22,7 +22,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.db.SerializationHeader;
 import org.apache.cassandra.db.TypeSizes;
 import org.apache.cassandra.io.compress.CompressionMetadata;
@@ -62,6 +61,9 @@ public class FileMessageHeader
     public final int sstableLevel;
     public final SerializationHeader.Component header;
 
+    /* cached size value */
+    private transient final long size;
+
     public FileMessageHeader(UUID cfId,
                              int sequenceNumber,
                              Version version,
@@ -84,6 +86,7 @@ public class FileMessageHeader
         this.repairedAt = repairedAt;
         this.sstableLevel = sstableLevel;
         this.header = header;
+        this.size = calculateSize();
     }
 
     public FileMessageHeader(UUID cfId,
@@ -108,6 +111,7 @@ public class FileMessageHeader
         this.repairedAt = repairedAt;
         this.sstableLevel = sstableLevel;
         this.header = header;
+        this.size = calculateSize();
     }
 
     public boolean isCompressed()
@@ -120,23 +124,28 @@ public class FileMessageHeader
      */
     public long size()
     {
-        long size = 0;
+        return size;
+    }
+
+    private long calculateSize()
+    {
+        long transferSize = 0;
         if (compressionInfo != null)
         {
             // calculate total length of transferring chunks
             for (CompressionMetadata.Chunk chunk : compressionInfo.chunks)
-                size += chunk.length + 4; // 4 bytes for CRC
+                transferSize += chunk.length + 4; // 4 bytes for CRC
         }
         else if (compressionMetadata != null)
         {
-            size = compressionMetadata.getTotalSizeForSections(sections);
+            transferSize = compressionMetadata.getTotalSizeForSections(sections);
         }
         else
         {
             for (Pair<Long, Long> section : sections)
-                size += section.right - section.left;
+                transferSize += section.right - section.left;
         }
-        return size;
+        return transferSize;
     }
 
     @Override
@@ -212,7 +221,7 @@ public class FileMessageHeader
         {
             UUID cfId = UUIDSerializer.serializer.deserialize(in, MessagingService.current_version);
             int sequenceNumber = in.readInt();
-            Version sstableVersion = DatabaseDescriptor.getSSTableFormat().info.getVersion(in.readUTF());
+            Version sstableVersion = SSTableFormat.Type.current().info.getVersion(in.readUTF());
 
             SSTableFormat.Type format = SSTableFormat.Type.LEGACY;
             if (version >= StreamMessage.VERSION_22)

@@ -19,7 +19,9 @@ package org.apache.cassandra;
  *
  */
 
+import java.io.Closeable;
 import java.io.EOFException;
+import java.io.IOError;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
@@ -39,6 +41,7 @@ import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.cql3.ColumnIdentifier;
 import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.Directories.DataDirectory;
 import org.apache.cassandra.db.compaction.AbstractCompactionTask;
 import org.apache.cassandra.db.compaction.CompactionManager;
 import org.apache.cassandra.db.marshal.AbstractType;
@@ -458,13 +461,35 @@ public class Util
     public static boolean equal(UnfilteredRowIterator a, UnfilteredRowIterator b)
     {
         return Objects.equals(a.columns(), b.columns())
-            && Objects.equals(a.metadata(), b.metadata())
+            && Objects.equals(a.stats(), b.stats())
+            && sameContent(a, b);
+    }
+
+    // Test equality of the iterators, but without caring too much about the "metadata" of said iterator. This is often
+    // what we want in tests. In particular, the columns() reported by the iterators will sometimes differ because they
+    // are a superset of what the iterator actually contains, and depending on the method used to get each iterator
+    // tested, one may include a defined column the other don't while there is not actual content for that column.
+    public static boolean sameContent(UnfilteredRowIterator a, UnfilteredRowIterator b)
+    {
+        return Objects.equals(a.metadata(), b.metadata())
             && Objects.equals(a.isReverseOrder(), b.isReverseOrder())
             && Objects.equals(a.partitionKey(), b.partitionKey())
             && Objects.equals(a.partitionLevelDeletion(), b.partitionLevelDeletion())
             && Objects.equals(a.staticRow(), b.staticRow())
-            && Objects.equals(a.stats(), b.stats())
             && Iterators.elementsEqual(a, b);
+    }
+
+    public static boolean sameContent(Mutation a, Mutation b)
+    {
+        if (!a.key().equals(b.key()) || !a.getColumnFamilyIds().equals(b.getColumnFamilyIds()))
+            return false;
+
+        for (UUID cfId : a.getColumnFamilyIds())
+        {
+            if (!sameContent(a.getPartitionUpdate(cfId).unfilteredIterator(), b.getPartitionUpdate(cfId).unfilteredIterator()))
+                return false;
+        }
+        return true;
     }
 
     // moved & refactored from KeyspaceTest in < 3.0
@@ -544,6 +569,62 @@ public class Util
         thread.join(10000);
     }
 
+    public static AssertionError runCatchingAssertionError(Runnable test)
+    {
+        try
+        {
+            test.run();
+            return null;
+        }
+        catch (AssertionError e)
+        {
+            return e;
+        }
+    }
+
+    /**
+     * Wrapper function used to run a test that can sometimes flake for uncontrollable reasons.
+     *
+     * If the given test fails on the first run, it is executed the given number of times again, expecting all secondary
+     * runs to succeed. If they do, the failure is understood as a flake and the test is treated as passing.
+     *
+     * Do not use this if the test is deterministic and its success is not influenced by external factors (such as time,
+     * selection of random seed, network failures, etc.). If the test can be made independent of such factors, it is
+     * probably preferable to do so rather than use this method.
+     *
+     * @param test The test to run.
+     * @param rerunsOnFailure How many times to re-run it if it fails. All reruns must pass.
+     * @param message Message to send to System.err on initial failure.
+     */
+    public static void flakyTest(Runnable test, int rerunsOnFailure, String message)
+    {
+        AssertionError e = runCatchingAssertionError(test);
+        if (e == null)
+            return;     // success
+        System.err.format("Test failed. %s%n"
+                        + "Re-running %d times to verify it isn't failing more often than it should.%n"
+                        + "Failure was: %s%n", message, rerunsOnFailure, e);
+        e.printStackTrace();
+
+        int rerunsFailed = 0;
+        for (int i = 0; i < rerunsOnFailure; ++i)
+        {
+            AssertionError t = runCatchingAssertionError(test);
+            if (t != null)
+            {
+                ++rerunsFailed;
+                e.addSuppressed(t);
+            }
+        }
+        if (rerunsFailed > 0)
+        {
+            System.err.format("Test failed in %d of the %d reruns.%n", rerunsFailed, rerunsOnFailure);
+            throw e;
+        }
+
+        System.err.println("All reruns succeeded. Failure treated as flake.");
+    }
+
     // for use with Optional in tests, can be used as an argument to orElseThrow
     public static Supplier<AssertionError> throwAssert(final String message)
     {
@@ -602,5 +683,22 @@ public class Util
         {
             return queryStorage(cfs, controller);
         }
+    }
+
+    public static Closeable markDirectoriesUnwriteable(ColumnFamilyStore cfs)
+    {
+        try
+        {
+            for ( ; ; )
+            {
+                DataDirectory dir = cfs.getDirectories().getWriteableLocation(1);
+                BlacklistedDirectories.maybeMarkUnwritable(cfs.getDirectories().getLocationForDisk(dir));
+            }
+        }
+        catch (IOError e)
+        {
+            // Expected -- marked all directories as unwritable
+        }
+        return () -> BlacklistedDirectories.clearUnwritableUnsafe();
     }
 }

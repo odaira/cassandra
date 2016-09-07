@@ -248,6 +248,7 @@ selectStatement returns [SelectStatement.RawStatement expr]
         Term.Raw limit = null;
         Term.Raw perPartitionLimit = null;
         Map<ColumnDefinition.Raw, Boolean> orderings = new LinkedHashMap<>();
+        List<ColumnDefinition.Raw> groups = new ArrayList<>();
         boolean allowFiltering = false;
         boolean isJson = false;
     }
@@ -256,12 +257,14 @@ selectStatement returns [SelectStatement.RawStatement expr]
       ( ( K_DISTINCT { isDistinct = true; } )? sclause=selectClause )
       K_FROM cf=columnFamilyName
       ( K_WHERE wclause=whereClause )?
+      ( K_GROUP K_BY groupByClause[groups] ( ',' groupByClause[groups] )* )?
       ( K_ORDER K_BY orderByClause[orderings] ( ',' orderByClause[orderings] )* )?
       ( K_PER K_PARTITION K_LIMIT rows=intValue { perPartitionLimit = rows; } )?
       ( K_LIMIT rows=intValue { limit = rows; } )?
       ( K_ALLOW K_FILTERING  { allowFiltering = true; } )?
       {
           SelectStatement.Parameters params = new SelectStatement.Parameters(orderings,
+                                                                             groups,
                                                                              isDistinct,
                                                                              allowFiltering,
                                                                              isJson);
@@ -326,6 +329,10 @@ orderByClause[Map<ColumnDefinition.Raw, Boolean> orderings]
     : c=cident (K_ASC | K_DESC { reversed = true; })? { orderings.put(c, reversed); }
     ;
 
+groupByClause[List<ColumnDefinition.Raw> groups]
+    : c=cident { groups.add(c); }
+    ;
+
 /**
  * INSERT INTO <CF> (<column>, <column>, <column>, ...)
  * VALUES (<value>, <value>, <value>, ...)
@@ -371,8 +378,7 @@ jsonInsertStatement [CFName cf] returns [UpdateStatement.ParsedInsertJson expr]
     ;
 
 jsonValue returns [Json.Raw value]
-    :
-    | s=STRING_LITERAL { $value = new Json.Literal($s.text); }
+    : s=STRING_LITERAL { $value = new Json.Literal($s.text); }
     | ':' id=noncol_ident     { $value = newJsonBindVariables(id); }
     | QMARK            { $value = newJsonBindVariables(null); }
     ;
@@ -777,22 +783,24 @@ alterTableStatement returns [AlterTableStatement expr]
         TableAttributes attrs = new TableAttributes();
         Map<ColumnDefinition.Raw, ColumnDefinition.Raw> renames = new HashMap<ColumnDefinition.Raw, ColumnDefinition.Raw>();
         List<AlterTableStatementColumn> colNameList = new ArrayList<AlterTableStatementColumn>();
+        Long deleteTimestamp = null;
     }
     : K_ALTER K_COLUMNFAMILY cf=columnFamilyName
           ( K_ALTER id=cident  K_TYPE v=comparatorType  { type = AlterTableStatement.Type.ALTER; } { colNameList.add(new AlterTableStatementColumn(id,v)); }
           | K_ADD  (        (id=cident   v=comparatorType   b1=cfisStatic { colNameList.add(new AlterTableStatementColumn(id,v,b1)); })
                      | ('('  id1=cident  v1=comparatorType  b1=cfisStatic { colNameList.add(new AlterTableStatementColumn(id1,v1,b1)); }
                        ( ',' idn=cident  vn=comparatorType  bn=cfisStatic { colNameList.add(new AlterTableStatementColumn(idn,vn,bn)); } )* ')' ) ) { type = AlterTableStatement.Type.ADD; }
-          | K_DROP (         id=cident  { colNameList.add(new AlterTableStatementColumn(id)); }
-                     | ('('  id1=cident { colNameList.add(new AlterTableStatementColumn(id1)); }
-                       ( ',' idn=cident { colNameList.add(new AlterTableStatementColumn(idn)); } )* ')') ) { type = AlterTableStatement.Type.DROP; }
+          | K_DROP ( (         id=cident  { colNameList.add(new AlterTableStatementColumn(id)); }
+                      | ('('  id1=cident { colNameList.add(new AlterTableStatementColumn(id1)); }
+                        ( ',' idn=cident { colNameList.add(new AlterTableStatementColumn(idn)); } )* ')') )
+                     ( K_USING K_TIMESTAMP t=INTEGER { deleteTimestamp = Long.parseLong(Constants.Literal.integer($t.text).getText()); })? ) { type = AlterTableStatement.Type.DROP; }
           | K_WITH  properties[attrs]                 { type = AlterTableStatement.Type.OPTS; }
           | K_RENAME                                  { type = AlterTableStatement.Type.RENAME; }
                id1=cident K_TO toId1=cident { renames.put(id1, toId1); }
                ( K_AND idn=cident K_TO toIdn=cident { renames.put(idn, toIdn); } )*
           )
     {
-        $expr = new AlterTableStatement(cf, type, colNameList, attrs, renames);
+        $expr = new AlterTableStatement(cf, type, colNameList, attrs, renames, deleteTimestamp);
     }
     ;
 
@@ -1285,8 +1293,7 @@ value returns [Term.Raw value]
     ;
 
 intValue returns [Term.Raw value]
-    :
-    | t=INTEGER     { $value = Constants.Literal.integer($t.text); }
+    : t=INTEGER     { $value = Constants.Literal.integer($t.text); }
     | ':' id=noncol_ident  { $value = newBindVariables(id); }
     | QMARK         { $value = newBindVariables(null); }
     ;
@@ -1634,5 +1641,6 @@ basic_unreserved_keyword returns [String str]
         | K_LIKE
         | K_PER
         | K_PARTITION
+        | K_GROUP
         ) { $str = $k.text; }
     ;

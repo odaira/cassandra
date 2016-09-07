@@ -38,6 +38,7 @@ import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.config.*;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
+import org.apache.cassandra.io.FSDiskFullWriteError;
 import org.apache.cassandra.io.FSError;
 import org.apache.cassandra.io.FSWriteError;
 import org.apache.cassandra.io.util.FileUtils;
@@ -145,7 +146,8 @@ public class Directories
         {
             boolean privilege = false;
 
-            switch (action) {
+            switch (action)
+            {
                 case X:
                     privilege = file.canExecute();
                     break;
@@ -180,6 +182,12 @@ public class Directories
     {
         this(metadata, dataDirectories);
     }
+
+    public Directories(final CFMetaData metadata, Collection<DataDirectory> paths)
+    {
+        this(metadata, paths.toArray(new DataDirectory[paths.size()]));
+    }
+
     /**
      * Create Directories of given ColumnFamily.
      * SSTable directories are created under data_directories defined in cassandra.yaml if not exist at this time.
@@ -394,7 +402,7 @@ public class Directories
 
         if (candidates.isEmpty())
             if (tooBig)
-                throw new RuntimeException("Insufficient disk space to write " + writeSize + " bytes");
+                throw new FSDiskFullWriteError(new IOException("Insufficient disk space to write " + writeSize + " bytes"), "");
             else
                 throw new FSWriteError(new IOException("All configured data directories have been blacklisted as unwritable for erroring out"), "");
 
@@ -504,6 +512,12 @@ public class Directories
     {
         File snapshotDir = getSnapshotDirectory(getDirectoryForNewSSTables(), snapshotName);
         return new File(snapshotDir, "manifest.json");
+    }
+
+    public File getSnapshotSchemaFile(String snapshotName)
+    {
+        File snapshotDir = getSnapshotDirectory(getDirectoryForNewSSTables(), snapshotName);
+        return new File(snapshotDir, "schema.cql");
     }
 
     public File getNewEphemeralSnapshotMarkerFile(String snapshotName)
@@ -877,7 +891,7 @@ public class Directories
                 }
                 catch (FSWriteError e)
                 {
-                    if (FBUtilities.isWindows())
+                    if (FBUtilities.isWindows)
                         SnapshotDeletingTask.addFailedSnapshot(snapshotDir);
                     else
                         throw e;
@@ -912,6 +926,19 @@ public class Directories
             result += getTrueAllocatedSizeIn(snapshotDir);
         }
         return result;
+    }
+
+    /**
+     * @return Raw size on disk for all directories
+     */
+    public long getRawDiretoriesSize()
+    {
+        long totalAllocatedSize = 0L;
+
+        for (File path : dataPaths)
+            totalAllocatedSize += FileUtils.folderSize(path);
+
+        return totalAllocatedSize;
     }
 
     public long getTrueAllocatedSizeIn(File input)
@@ -1002,7 +1029,7 @@ public class Directories
         for (int i = 0; i < locations.length; ++i)
             dataDirectories[i] = new DataDirectory(new File(locations[i]));
     }
-    
+
     private class SSTableSizeSummer extends DirectorySizeCalculator
     {
         private final HashSet<File> toSkip;

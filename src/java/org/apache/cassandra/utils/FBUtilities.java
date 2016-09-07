@@ -55,7 +55,6 @@ import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.metadata.MetadataComponent;
 import org.apache.cassandra.io.sstable.metadata.MetadataType;
 import org.apache.cassandra.io.sstable.metadata.ValidationMetadata;
-import org.apache.cassandra.schema.CompressionParams;
 import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.io.util.DataOutputBufferFixed;
 import org.apache.cassandra.io.util.FileUtils;
@@ -74,11 +73,11 @@ public class FBUtilities
     private static final String DEFAULT_TRIGGER_DIR = "triggers";
 
     private static final String OPERATING_SYSTEM = System.getProperty("os.name").toLowerCase();
-    private static final boolean IS_WINDOWS = OPERATING_SYSTEM.contains("windows");
-    private static final boolean HAS_PROCFS = !IS_WINDOWS && (new File(File.separator + "proc")).exists();
+    public static final boolean isWindows = OPERATING_SYSTEM.contains("windows");
 
     private static volatile InetAddress localInetAddress;
     private static volatile InetAddress broadcastInetAddress;
+    private static volatile InetAddress broadcastRpcAddress;
 
     public static int getAvailableProcessors()
     {
@@ -152,6 +151,16 @@ public class FBUtilities
         return broadcastInetAddress;
     }
 
+
+    public static InetAddress getBroadcastRpcAddress()
+    {
+        if (broadcastRpcAddress == null)
+            broadcastRpcAddress = DatabaseDescriptor.getBroadcastRpcAddress() == null
+                                   ? DatabaseDescriptor.getRpcAddress()
+                                   : DatabaseDescriptor.getBroadcastRpcAddress();
+        return broadcastRpcAddress;
+    }
+
     public static Collection<InetAddress> getAllLocalAddresses()
     {
         Set<InetAddress> localAddresses = new HashSet<InetAddress>();
@@ -173,10 +182,14 @@ public class FBUtilities
 
     public static String getNetworkInterface(InetAddress localAddress)
     {
-        try {
-            for(NetworkInterface ifc : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                if(ifc.isUp()) {
-                    for(InetAddress addr : Collections.list(ifc.getInetAddresses())) {
+        try
+        {
+            for(NetworkInterface ifc : Collections.list(NetworkInterface.getNetworkInterfaces()))
+            {
+                if(ifc.isUp())
+                {
+                    for(InetAddress addr : Collections.list(ifc.getInetAddresses()))
+                    {
                         if (addr.equals(localAddress))
                             return ifc.getDisplayName();
                     }
@@ -725,20 +738,6 @@ public class FBUtilities
         buffer.position(position);
     }
 
-    private static final ThreadLocal<byte[]> threadLocalScratchBuffer = new ThreadLocal<byte[]>()
-    {
-        @Override
-        protected byte[] initialValue()
-        {
-            return new byte[CompressionParams.DEFAULT_CHUNK_LENGTH];
-        }
-    };
-
-    public static byte[] getThreadLocalScratchBuffer()
-    {
-        return threadLocalScratchBuffer.get();
-    }
-
     public static long abs(long index)
     {
         long negbit = index >> 63;
@@ -808,16 +807,6 @@ public class FBUtilities
         File historyDir = new File(System.getProperty("user.home"), ".cassandra");
         FileUtils.createDirectory(historyDir);
         return historyDir;
-    }
-
-    public static boolean isWindows()
-    {
-        return IS_WINDOWS;
-    }
-
-    public static boolean hasProcFS()
-    {
-        return HAS_PROCFS;
     }
 
     public static void updateWithShort(MessageDigest digest, int val)
@@ -892,7 +881,7 @@ public class FBUtilities
             throw new RuntimeException(e);
         }
     }
-	
+
 	public static void sleepQuietly(long millis)
     {
         try
@@ -908,5 +897,13 @@ public class FBUtilities
     public static long align(long val, int boundary)
     {
         return (val + boundary) & ~(boundary - 1);
+    }
+
+    @VisibleForTesting
+    protected static void reset()
+    {
+        localInetAddress = null;
+        broadcastInetAddress = null;
+        broadcastRpcAddress = null;
     }
 }

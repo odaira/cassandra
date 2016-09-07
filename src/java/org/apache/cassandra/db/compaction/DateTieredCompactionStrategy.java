@@ -138,7 +138,7 @@ public class DateTieredCompactionStrategy extends AbstractCompactionStrategy
         if (sstablesWithTombstones.isEmpty())
             return Collections.emptyList();
 
-        return Collections.singletonList(Collections.min(sstablesWithTombstones, new SSTableReader.SizeComparator()));
+        return Collections.singletonList(Collections.min(sstablesWithTombstones, SSTableReader.sizeComparator));
     }
 
     private List<SSTableReader> getCompactionCandidates(Iterable<SSTableReader> candidateSSTables, long now, int base)
@@ -462,7 +462,8 @@ public class DateTieredCompactionStrategy extends AbstractCompactionStrategy
         return uncheckedOptions;
     }
 
-    public CompactionLogger.Strategy strategyLogger() {
+    public CompactionLogger.Strategy strategyLogger() 
+    {
         return new CompactionLogger.Strategy()
         {
             public JsonNode sstable(SSTableReader sstable)

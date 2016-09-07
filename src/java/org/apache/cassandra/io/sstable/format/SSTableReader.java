@@ -42,15 +42,16 @@ import org.apache.cassandra.cache.ChunkCache;
 import org.apache.cassandra.cache.InstrumentingCache;
 import org.apache.cassandra.cache.KeyCacheKey;
 import org.apache.cassandra.concurrent.DebuggableThreadPoolExecutor;
+import org.apache.cassandra.concurrent.NamedThreadFactory;
 import org.apache.cassandra.concurrent.ScheduledExecutors;
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
+import org.apache.cassandra.config.SchemaConstants;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.ColumnFilter;
-import org.apache.cassandra.db.rows.EncodingStats;
-import org.apache.cassandra.db.rows.UnfilteredRowIterator;
+import org.apache.cassandra.db.rows.*;
 import org.apache.cassandra.dht.AbstractBounds;
 import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
@@ -62,6 +63,7 @@ import org.apache.cassandra.io.sstable.metadata.*;
 import org.apache.cassandra.io.util.*;
 import org.apache.cassandra.metrics.RestorableMeter;
 import org.apache.cassandra.metrics.StorageMetrics;
+import org.apache.cassandra.net.*;
 import org.apache.cassandra.schema.CachingParams;
 import org.apache.cassandra.schema.IndexMetadata;
 import org.apache.cassandra.service.ActiveRepairService;
@@ -136,11 +138,18 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
 {
     private static final Logger logger = LoggerFactory.getLogger(SSTableReader.class);
 
-    private static final ScheduledThreadPoolExecutor syncExecutor = new ScheduledThreadPoolExecutor(1);
-    static
+    private static final ScheduledThreadPoolExecutor syncExecutor = initSyncExecutor();
+    private static ScheduledThreadPoolExecutor initSyncExecutor()
     {
+        if (DatabaseDescriptor.isClientOrToolInitialized())
+            return null;
+
+        // Do NOT start this thread pool in client mode
+
+        ScheduledThreadPoolExecutor syncExecutor = new ScheduledThreadPoolExecutor(1, new NamedThreadFactory("read-hotness-tracker"));
         // Immediately remove readMeter sync task when cancelled.
         syncExecutor.setRemoveOnCancelPolicy(true);
+        return syncExecutor;
     }
     private static final RateLimiter meterSyncThrottle = RateLimiter.create(100.0);
 
@@ -166,6 +175,14 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
     };
 
     public static final Ordering<SSTableReader> sstableOrdering = Ordering.from(sstableComparator);
+
+    public static final Comparator<SSTableReader> sizeComparator = new Comparator<SSTableReader>()
+    {
+        public int compare(SSTableReader o1, SSTableReader o2)
+        {
+            return Longs.compare(o1.onDiskLength(), o2.onDiskLength());
+        }
+    };
 
     /**
      * maxDataAge is a timestamp in local server time (e.g. System.currentTimeMilli) which represents an upper bound
@@ -1484,7 +1501,8 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
 
     protected RowIndexEntry getCachedPosition(KeyCacheKey unifiedKey, boolean updateStats)
     {
-        if (keyCache != null && keyCache.getCapacity() > 0 && metadata.params.caching.cacheKeys()) {
+        if (keyCache != null && keyCache.getCapacity() > 0 && metadata.params.caching.cacheKeys()) 
+        {
             if (updateStats)
             {
                 RowIndexEntry cachedEntry = keyCache.get(unifiedKey);
@@ -1528,6 +1546,8 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
 
     public abstract UnfilteredRowIterator iterator(DecoratedKey key, Slices slices, ColumnFilter selectedColumns, boolean reversed, boolean isForThrift);
     public abstract UnfilteredRowIterator iterator(FileDataInput file, DecoratedKey key, RowIndexEntry indexEntry, Slices slices, ColumnFilter selectedColumns, boolean reversed, boolean isForThrift);
+
+    public abstract UnfilteredRowIterator simpleIterator(FileDataInput file, DecoratedKey key, RowIndexEntry indexEntry, boolean tombstoneOnly);
 
     /**
      * Finds and returns the first key beyond a given token in this SSTable or null if no such key exists.
@@ -1758,6 +1778,35 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
         }
 
         return key;
+    }
+
+    /**
+     * Reads Clustering Key from the data file of current sstable.
+     *
+     * @param rowPosition start position of given row in the data file
+     * @return Clustering of the row
+     * @throws IOException
+     */
+    public Clustering clusteringAt(long rowPosition) throws IOException
+    {
+        Clustering clustering;
+        try (FileDataInput in = dfile.createReader(rowPosition))
+        {
+            if (in.isEOF())
+                return null;
+
+            int flags = in.readUnsignedByte();
+            int extendedFlags = UnfilteredSerializer.readExtendedFlags(in, flags);
+            boolean isStatic = UnfilteredSerializer.isStatic(extendedFlags);
+
+            if (isStatic)
+                clustering = Clustering.STATIC_CLUSTERING;
+            else
+                // Since this is an internal call, we don't have to take care of protocol versions that use legacy layout
+                clustering = Clustering.serializer.deserialize(in, MessagingService.VERSION_30, header.clusteringTypes());
+        }
+
+        return clustering;
     }
 
     /**
@@ -2016,14 +2065,6 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
         return 0;
     }
 
-    public static class SizeComparator implements Comparator<SSTableReader>
-    {
-        public int compare(SSTableReader o1, SSTableReader o2)
-        {
-            return Longs.compare(o1.onDiskLength(), o2.onDiskLength());
-        }
-    }
-
     public EncodingStats stats()
     {
         // We could return sstable.header.stats(), but this may not be as accurate than the actual sstable stats (see
@@ -2203,7 +2244,8 @@ public abstract class SSTableReader extends SSTable implements SelfRefCounted<SS
 
             // Don't track read rates for tables in the system keyspace and don't bother trying to load or persist
             // the read meter when in client mode.
-            if (Schema.isSystemKeyspace(desc.ksname))
+            // Also, do not track read rates when running in client or tools mode (syncExecuter isn't available in these modes)
+            if (SchemaConstants.isSystemKeyspace(desc.ksname) || DatabaseDescriptor.isClientOrToolInitialized())
             {
                 readMeter = null;
                 readMeterSyncFuture = NULL;

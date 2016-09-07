@@ -22,14 +22,17 @@ import java.io.FilenameFilter;
 import java.io.IOException;
 
 import com.google.common.io.Files;
+import org.apache.commons.lang3.ArrayUtils;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.Test;
 
 import org.apache.cassandra.config.Config;
+import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.exceptions.InvalidRequestException;
 import org.apache.cassandra.io.util.FileUtils;
+import org.apache.cassandra.tools.Util;
 
 import static org.junit.Assert.assertEquals;
 
@@ -41,19 +44,7 @@ public class CQLSSTableWriterClientTest
     public void setUp()
     {
         this.testDirectory = Files.createTempDir();
-        Config.setClientMode(true);
-    }
-
-    @After
-    public void tearDown()
-    {
-        FileUtils.deleteRecursive(this.testDirectory);
-    }
-
-    @AfterClass
-    public static void cleanup() throws Exception
-    {
-        Config.setClientMode(false);
+        DatabaseDescriptor.daemonInitialization();
     }
 
     @Test
@@ -86,16 +77,16 @@ public class CQLSSTableWriterClientTest
         writer.close();
         writer2.close();
 
-        FilenameFilter filter = new FilenameFilter()
-        {
-            @Override
-            public boolean accept(File dir, String name)
-            {
-                return name.endsWith("-Data.db");
-            }
-        };
+        FilenameFilter filter = (dir, name) -> name.endsWith("-Data.db");
 
-        File[] dataFiles = this.testDirectory.listFiles(filter);
+        File[] dataFiles = (File[])ArrayUtils.addAll(writer2.getInnermostDirectory().listFiles(filter),
+                                                     writer.getInnermostDirectory().listFiles(filter));
         assertEquals(2, dataFiles.length);
+    }
+
+    @After
+    public void tearDown()
+    {
+        FileUtils.deleteRecursive(this.testDirectory);
     }
 }
