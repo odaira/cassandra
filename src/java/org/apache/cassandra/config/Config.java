@@ -189,6 +189,7 @@ public class Config
     public String saved_caches_directory;
 
     // Commit Log
+    public String commitlog_class_name = "org.apache.cassandra.db.commitlog.FileCommitLogProvider";
     public String commitlog_directory;
     public Integer commitlog_total_space_in_mb;
     public CommitLogSync commitlog_sync;

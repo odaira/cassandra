@@ -27,7 +27,7 @@ import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.ParameterizedClass;
-import org.apache.cassandra.db.commitlog.CommitLog;
+import org.apache.cassandra.db.commitlog.CommitLogHelper;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.compress.DeflateCompressor;
 import org.apache.cassandra.io.compress.LZ4Compressor;
@@ -74,7 +74,7 @@ public class RecoveryManagerTruncateTest
     @Before
     public void setUp() throws IOException
     {
-        CommitLog.instance.resetUnsafe(true);
+        CommitLogHelper.instance.resetUnsafe(true);
     }
 
     @BeforeClass
@@ -104,7 +104,7 @@ public class RecoveryManagerTruncateTest
 
         // and now truncate it
         cfs.truncateBlocking();
-        assert 0 != CommitLog.instance.resetUnsafe(false);
+        assert 0 != CommitLogHelper.instance.resetUnsafe(false);
 
         // and validate truncation.
         Util.assertEmptyUnfiltered(Util.cmd(cfs).build());

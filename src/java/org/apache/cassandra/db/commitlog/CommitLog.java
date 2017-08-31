@@ -60,11 +60,11 @@ import static org.apache.cassandra.utils.FBUtilities.updateChecksumInt;
  * Commit Log tracks every write operation into the system. The aim of the commit log is to be able to
  * successfully recover data that was not stored to disk via the Memtable.
  */
-public class CommitLog implements CommitLogMBean
+public class CommitLog implements CommitLogMBean, ICommitLog
 {
     private static final Logger logger = LoggerFactory.getLogger(CommitLog.class);
 
-    public static final CommitLog instance = CommitLog.construct();
+    static final CommitLog instance = CommitLog.construct();
 
     // we only permit records HALF the size of a commit log, to ensure we don't spin allocating many mostly
     // empty segments when writing large records
@@ -420,6 +420,27 @@ public class CommitLog implements CommitLogMBean
         executor.awaitTermination();
         segmentManager.shutdown();
         segmentManager.awaitTermination();
+    }
+
+    /**
+     * Perform recovery on commit logs.
+     *
+     * @return the number of mutations replayed
+     * @throws IOException
+     */
+    @Override
+    public int recover() throws IOException
+    {
+        return recoverSegmentsOnDisk();
+    }
+
+    /**
+     * FOR TESTING PURPOSES
+     * @return the commit log instance
+     */
+    public static CommitLog getInstance()
+    {
+        return instance;
     }
 
     /**

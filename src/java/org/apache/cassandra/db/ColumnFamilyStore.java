@@ -45,7 +45,7 @@ import com.clearspring.analytics.stream.Counter;
 import org.apache.cassandra.cache.*;
 import org.apache.cassandra.concurrent.*;
 import org.apache.cassandra.config.*;
-import org.apache.cassandra.db.commitlog.CommitLog;
+import org.apache.cassandra.db.commitlog.CommitLogHelper;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.compaction.*;
 import org.apache.cassandra.db.filter.ClusteringIndexFilter;
@@ -393,7 +393,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         // Create Memtable only on online
         Memtable initialMemtable = null;
         if (DatabaseDescriptor.isDaemonInitialized())
-            initialMemtable = new Memtable(new AtomicReference<>(CommitLog.instance.getCurrentPosition()), this);
+            initialMemtable = new Memtable(new AtomicReference<>(CommitLogHelper.instance.getCurrentPosition()), this);
         data = new Tracker(initialMemtable, loadSSTables);
 
         // scan for sstables corresponding to this cf and load them
@@ -982,7 +982,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             {
                 Memtable memtable = memtables.get(0);
                 commitLogUpperBound = memtable.getCommitLogUpperBound();
-                CommitLog.instance.discardCompletedSegments(metadata.id, memtable.getCommitLogLowerBound(), commitLogUpperBound);
+                CommitLogHelper.instance.discardCompletedSegments(metadata.id, memtable.getCommitLogLowerBound(), commitLogUpperBound);
             }
 
             metric.pendingFlushes.dec();
@@ -1213,7 +1213,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         CommitLogPosition lastReplayPosition;
         while (true)
         {
-            lastReplayPosition = new Memtable.LastCommitLogPosition((CommitLog.instance.getCurrentPosition()));
+            lastReplayPosition = new Memtable.LastCommitLogPosition((CommitLogHelper.instance.getCurrentPosition()));
             CommitLogPosition currentLast = commitLogUpperBound.get();
             if ((currentLast == null || currentLast.compareTo(lastReplayPosition) <= 0)
                 && commitLogUpperBound.compareAndSet(currentLast, lastReplayPosition))

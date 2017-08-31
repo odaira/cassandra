@@ -52,7 +52,7 @@ public class DropRecreateAndRestoreTest extends CQLTester
         assertRows(execute("SELECT * FROM %s"), row(1, 0, 2), row(1, 1, 3), row(0, 0, 0), row(0, 1, 1));
 
         // Drop will flush and clean segments. Hard-link them so that they can be restored later.
-        List<String> segments = CommitLog.instance.getActiveSegmentNames();
+        List<String> segments = CommitLog.getInstance().getActiveSegmentNames();
         File logPath = new File(DatabaseDescriptor.getCommitLogLocation());
         for (String segment: segments)
             FileUtils.createHardLink(new File(logPath, segment), new File(logPath, segment + ".save"));
@@ -69,12 +69,12 @@ public class DropRecreateAndRestoreTest extends CQLTester
         try
         {
             // Restore to point in time.
-            CommitLog.instance.archiver.restorePointInTime = time;
-            CommitLog.instance.resetUnsafe(false);
+            CommitLog.getInstance().archiver.restorePointInTime = time;
+            CommitLog.getInstance().resetUnsafe(false);
         }
         finally
         {
-            CommitLog.instance.archiver.restorePointInTime = Long.MAX_VALUE;
+            CommitLog.getInstance().archiver.restorePointInTime = Long.MAX_VALUE;
         }
 
         assertRows(execute("SELECT * FROM %s"), row(0, 0, 0), row(0, 1, 1));

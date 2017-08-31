@@ -38,7 +38,7 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.ParameterizedClass;
 import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.db.compaction.CompactionManager;
-import org.apache.cassandra.db.commitlog.CommitLog;
+import org.apache.cassandra.db.commitlog.CommitLogHelper;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.compress.DeflateCompressor;
 import org.apache.cassandra.io.compress.LZ4Compressor;
@@ -77,7 +77,7 @@ public class RecoveryManagerFlushedTest
     @Before
     public void setUp() throws IOException
     {
-        CommitLog.instance.resetUnsafe(true);
+        CommitLogHelper.instance.resetUnsafe(true);
     }
 
     @BeforeClass
@@ -118,7 +118,7 @@ public class RecoveryManagerFlushedTest
         logger.debug("begin manual replay");
         // replay the commit log (nothing on Standard1 should be replayed since everything was flushed, so only the row on Standard2
         // will be replayed)
-        int replayed = CommitLog.instance.resetUnsafe(false);
+        int replayed = CommitLogHelper.instance.resetUnsafe(false);
         assert replayed == 1 : "Expecting only 1 replayed mutation, got " + replayed;
     }
 

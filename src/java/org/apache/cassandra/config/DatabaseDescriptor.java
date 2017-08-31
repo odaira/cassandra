@@ -1585,6 +1585,11 @@ public class DatabaseDescriptor
         return conf.data_file_directories;
     }
 
+    public static String getCommitLogClassName()
+    {
+	return conf.commitlog_class_name;
+    }
+
     public static String getCommitLogLocation()
     {
         return conf.commitlog_directory;

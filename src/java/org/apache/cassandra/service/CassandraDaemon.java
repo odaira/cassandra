@@ -57,7 +57,7 @@ import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.schema.SchemaConstants;
 import org.apache.cassandra.cql3.QueryProcessor;
 import org.apache.cassandra.db.*;
-import org.apache.cassandra.db.commitlog.CommitLog;
+import org.apache.cassandra.db.commitlog.CommitLogHelper;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.exceptions.StartupException;
 import org.apache.cassandra.gms.Gossiper;
@@ -314,7 +314,7 @@ public class CassandraDaemon
         // Replay any CommitLogSegments found on disk
         try
         {
-            CommitLog.instance.recoverSegmentsOnDisk();
+            CommitLogHelper.instance.recover();
         }
         catch (IOException e)
         {
