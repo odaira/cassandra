@@ -423,7 +423,7 @@ public class CommitLog implements CommitLogMBean, ICommitLog
     }
 
     /**
-     * Perform recovery on commit logs.
+     * Performs recovery on commit logs.
      *
      * @return the number of mutations replayed
      * @throws IOException
@@ -436,6 +436,7 @@ public class CommitLog implements CommitLogMBean, ICommitLog
 
     /**
      * FOR TESTING PURPOSES
+     * Returns the singleton instance.
      * @return the commit log instance
      */
     public static CommitLog getInstance()
