@@ -209,6 +209,7 @@ public class CommitLog implements CommitLogMBean, ICommitLog
      * @return a CommitLogPosition which, if {@code >= one} returned from add(), implies add() was started
      * (but not necessarily finished) prior to this call
      */
+    @Override
     public CommitLogPosition getCurrentPosition()
     {
         return segmentManager.getCurrentPosition();
@@ -217,6 +218,7 @@ public class CommitLog implements CommitLogMBean, ICommitLog
     /**
      * Flushes all dirty CFs, waiting for them to free and recycle any segments they were retaining
      */
+    @Override
     public void forceRecycleAllSegments(Iterable<TableId> droppedTables)
     {
         segmentManager.forceRecycleAll(droppedTables);
@@ -225,6 +227,7 @@ public class CommitLog implements CommitLogMBean, ICommitLog
     /**
      * Flushes all dirty CFs, waiting for them to free and recycle any segments they were retaining
      */
+    @Override
     public void forceRecycleAllSegments()
     {
         segmentManager.forceRecycleAll(Collections.emptyList());
@@ -252,6 +255,7 @@ public class CommitLog implements CommitLogMBean, ICommitLog
      * @param mutation the Mutation to add to the log
      * @throws CDCWriteException
      */
+    @Override
     public CommitLogPosition add(Mutation mutation) throws CDCWriteException
     {
         assert mutation != null;
@@ -311,6 +315,7 @@ public class CommitLog implements CommitLogMBean, ICommitLog
      * @param lowerBound the lowest covered replay position of the flush
      * @param lowerBound the highest covered replay position of the flush
      */
+    @Override
     public void discardCompletedSegments(final TableId id, final CommitLogPosition lowerBound, final CommitLogPosition upperBound)
     {
         logger.trace("discard completed log segments for {}-{}, table {}", lowerBound, upperBound, id);
@@ -414,6 +419,7 @@ public class CommitLog implements CommitLogMBean, ICommitLog
     /**
      * Shuts down the threads used by the commit log, blocking until completion.
      */
+    @Override
     public void shutdownBlocking() throws InterruptedException
     {
         executor.shutdown();
