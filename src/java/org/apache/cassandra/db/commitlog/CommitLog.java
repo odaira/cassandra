@@ -448,6 +448,7 @@ public class CommitLog implements CommitLogMBean, ICommitLog
      * FOR TESTING PURPOSES
      * @return the number of files recovered
      */
+    @Override
     public int resetUnsafe(boolean deleteSegments) throws IOException
     {
         stopUnsafe(deleteSegments);
@@ -467,6 +468,7 @@ public class CommitLog implements CommitLogMBean, ICommitLog
     /**
      * FOR TESTING PURPOSES
      */
+    @Override
     public void stopUnsafe(boolean deleteSegments)
     {
         executor.shutdown();
@@ -488,6 +490,7 @@ public class CommitLog implements CommitLogMBean, ICommitLog
     /**
      * FOR TESTING PURPOSES
      */
+    @Override
     public int restartUnsafe() throws IOException
     {
         return start().recoverSegmentsOnDisk();
