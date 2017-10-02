@@ -42,7 +42,7 @@ public interface ICommitLog
 
     int resetUnsafe(boolean deleteSegments) throws IOException;
 
-    void stopUnsafe(boolean deleteSegments);
+    void stopUnsafe(boolean deleteSegments) throws IOException;
 
     int restartUnsafe() throws IOException;
 }
