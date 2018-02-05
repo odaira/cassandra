@@ -349,6 +349,12 @@ public class CommitLog implements CommitLogMBean, ICommitLog
     }
 
     @Override
+    public CommitLogArchiver getArchiver()
+    {
+        return archiver;
+    }
+
+    @Override
     public String getArchiveCommand()
     {
         return archiver.archiveCommand;

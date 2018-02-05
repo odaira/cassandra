@@ -48,6 +48,7 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.ParameterizedClass;
 import org.apache.cassandra.db.commitlog.CommitLogHelper;
 import org.apache.cassandra.db.commitlog.CommitLogArchiver;
+import org.apache.cassandra.db.commitlog.AbstractCommitLogReplayer;
 import org.apache.cassandra.db.commitlog.CommitLogReplayer;
 import org.apache.cassandra.db.context.CounterContext;
 import org.apache.cassandra.db.rows.*;
@@ -129,11 +130,11 @@ public class RecoveryManagerTest
     @Test
     public void testRecoverBlocksOnBytesOutstanding() throws Exception
     {
-        long originalMaxOutstanding = CommitLogReplayer.MAX_OUTSTANDING_REPLAY_BYTES;
-        CommitLogReplayer.MAX_OUTSTANDING_REPLAY_BYTES = 1;
-        CommitLogReplayer.MutationInitiator originalInitiator = CommitLogReplayer.mutationInitiator;
+        long originalMaxOutstanding = AbstractCommitLogReplayer.MAX_OUTSTANDING_REPLAY_BYTES;
+        AbstractCommitLogReplayer.MAX_OUTSTANDING_REPLAY_BYTES = 1;
+        AbstractCommitLogReplayer.MutationInitiator originalInitiator = AbstractCommitLogReplayer.mutationInitiator;
         MockInitiator mockInitiator = new MockInitiator();
-        CommitLogReplayer.mutationInitiator = mockInitiator;
+        AbstractCommitLogReplayer.mutationInitiator = mockInitiator;
         try
         {
             CommitLogHelper.instance.resetUnsafe(true);
@@ -190,8 +191,8 @@ public class RecoveryManagerTest
         }
         finally
         {
-            CommitLogReplayer.mutationInitiator = originalInitiator;
-            CommitLogReplayer.MAX_OUTSTANDING_REPLAY_BYTES = originalMaxOutstanding;
+            AbstractCommitLogReplayer.mutationInitiator = originalInitiator;
+            AbstractCommitLogReplayer.MAX_OUTSTANDING_REPLAY_BYTES = originalMaxOutstanding;
         }
     }
 
@@ -307,7 +308,7 @@ public class RecoveryManagerTest
         assertEquals(2, Util.getAll(Util.cmd(cfs).build()).size());
     }
 
-    private static class MockInitiator extends CommitLogReplayer.MutationInitiator
+    private static class MockInitiator extends AbstractCommitLogReplayer.MutationInitiator
     {
         final Semaphore blocker = new Semaphore(0);
         final Semaphore blocked = new Semaphore(0);
@@ -317,7 +318,7 @@ public class RecoveryManagerTest
                 final long segmentId,
                 final int serializedSize,
                 final int entryLocation,
-                final CommitLogReplayer clr)
+                final AbstractCommitLogReplayer clr)
         {
             final Future<Integer> toWrap = super.initiateMutation(mutation,
                                                                   segmentId,

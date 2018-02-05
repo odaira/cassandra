@@ -46,7 +46,7 @@ import org.apache.cassandra.utils.JVMStabilityInspector;
 
 import static org.apache.cassandra.utils.FBUtilities.updateChecksumInt;
 
-public class CommitLogReader
+public class CommitLogReader extends AbstractCommitLogReader
 {
     private static final Logger logger = LoggerFactory.getLogger(CommitLogReader.class);
 
@@ -55,20 +55,13 @@ public class CommitLogReader
     @VisibleForTesting
     public static final int ALL_MUTATIONS = -1;
     private final CRC32 checksum;
-    private final Map<TableId, AtomicInteger> invalidMutations;
 
     private byte[] buffer;
 
     public CommitLogReader()
     {
         checksum = new CRC32();
-        invalidMutations = new HashMap<>();
         buffer = new byte[4096];
-    }
-
-    public Set<Map.Entry<TableId, AtomicInteger>> getInvalidMutations()
-    {
-        return invalidMutations.entrySet();
     }
 
     /**
@@ -400,81 +393,6 @@ public class CommitLogReader
             if (mutationPosition >= minPosition.position)
                 statusTracker.addProcessedMutation();
         }
-    }
-
-    /**
-     * Deserializes and passes a Mutation to the ICommitLogReadHandler requested
-     *
-     * @param handler Handler that will take action based on deserialized Mutations
-     * @param inputBuffer raw byte array w/Mutation data
-     * @param size deserialized size of mutation
-     * @param minPosition We need to suppress replay of mutations that are before the required minPosition
-     * @param entryLocation filePointer offset of end of mutation within CommitLogSegment
-     * @param desc CommitLogDescriptor being worked on
-     */
-    @VisibleForTesting
-    protected void readMutation(CommitLogReadHandler handler,
-                                byte[] inputBuffer,
-                                int size,
-                                CommitLogPosition minPosition,
-                                final int entryLocation,
-                                final CommitLogDescriptor desc) throws IOException
-    {
-        // For now, we need to go through the motions of deserializing the mutation to determine its size and move
-        // the file pointer forward accordingly, even if we're behind the requested minPosition within this SyncSegment.
-        boolean shouldReplay = entryLocation > minPosition.position;
-
-        final Mutation mutation;
-        try (RebufferingInputStream bufIn = new DataInputBuffer(inputBuffer, 0, size))
-        {
-            mutation = Mutation.serializer.deserialize(bufIn,
-                                                       desc.getMessagingVersion(),
-                                                       SerializationHelper.Flag.LOCAL);
-            // doublecheck that what we read is still] valid for the current schema
-            for (PartitionUpdate upd : mutation.getPartitionUpdates())
-                upd.validate();
-        }
-        catch (UnknownTableException ex)
-        {
-            if (ex.id == null)
-                return;
-            AtomicInteger i = invalidMutations.get(ex.id);
-            if (i == null)
-            {
-                i = new AtomicInteger(1);
-                invalidMutations.put(ex.id, i);
-            }
-            else
-                i.incrementAndGet();
-            return;
-        }
-        catch (Throwable t)
-        {
-            JVMStabilityInspector.inspectThrowable(t);
-            Path p = Files.createTempFile("mutation", "dat");
-
-            try (DataOutputStream out = new DataOutputStream(Files.newOutputStream(p)))
-            {
-                out.write(inputBuffer, 0, size);
-            }
-
-            // Checksum passed so this error can't be permissible.
-            handler.handleUnrecoverableError(new CommitLogReadException(
-                String.format(
-                    "Unexpected error deserializing mutation; saved to %s.  " +
-                    "This may be caused by replaying a mutation against a table with the same name but incompatible schema.  " +
-                    "Exception follows: %s", p.toString(), t),
-                CommitLogReadErrorReason.MUTATION_ERROR,
-                false));
-            return;
-        }
-
-        if (logger.isTraceEnabled())
-            logger.trace("Read mutation for {}.{}: {}", mutation.getKeyspaceName(), mutation.key(),
-                         "{" + StringUtils.join(mutation.getPartitionUpdates().iterator(), ", ") + "}");
-
-        if (shouldReplay)
-            handler.handleMutation(mutation, size, entryLocation, desc);
     }
 
     /**

@@ -45,4 +45,6 @@ public interface ICommitLog
     void stopUnsafe(boolean deleteSegments) throws IOException;
 
     int restartUnsafe() throws IOException;
+
+    CommitLogArchiver getArchiver();
 }
